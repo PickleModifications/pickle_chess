@@ -3,8 +3,22 @@ CURRENT_ENTITY = nil
 CURRENT_INTERACTION = nil
 local InteractiveEntityTypes = {}
 
+-- Board drag: piece stays at this height (in meters relative to interaction coords) while dragging
+local DRAG_Z_OFFSET = 0.075
+-- Board/table half-extent in meters; pieces are clamped so they can't be dragged off
+local DRAG_BOARD_HALF_EXTENT = 0.22
+-- Screen region: inset from each edge (0-1); region is [inset, 1-inset]. Larger = smaller drag area.
+local DRAG_SCREEN_INSET_X = 0.38
+local DRAG_SCREEN_INSET_Y = 0.38
+-- Grace zone (0-1) outside inset before we clamp; avoids sticky feel when cursor exceeds and returns
+local DRAG_SCREEN_GRACE = 0.05
+
 function lerp(a, b, t)
     return a + (b - a) * t
+end
+
+function clamp(value, minVal, maxVal)
+    return math.max(minVal, math.min(maxVal, value))
 end
 
 -- Draw 3D text at a world position
@@ -121,8 +135,8 @@ function StartInteraction(coords, heading)
     local forwardVector, rightVector, upVector, position = GetEntityMatrix(temp)
     DeleteEntity(temp)
     CreateScriptedCamera()
-    local camCoords = coords + (forwardVector * -0.5) + vector3(0.0, 0.0, 0.35)
-    local camRotation = vector3(-10.0, 0.0, heading)
+    local camCoords = coords
+    local camRotation = vector3(-55.0, 0.0, heading)
     SetCamParams(CurrentCamera, camCoords.x, camCoords.y, camCoords.z,
         camRotation.x, camRotation.y, camRotation.z, 90.0, 
         0, 0, 0, 2
@@ -141,6 +155,45 @@ function StartInteraction(coords, heading)
             {key = "ESC", label = "controls_exit"}
         }
     })
+    -- Cursor grace: pull cursor to closest point on grace boundary when it exceeds zone (runs every 500ms so it doesn't get stuck)
+    CreateThread(function()
+        while CURRENT_INTERACTION do
+            if CURRENT_ENTITY then
+                local screenX, screenY = GetNuiCursorPosition()
+                local resX, resY = GetActualScreenResolution()
+                screenX = screenX / resX
+                screenY = screenY / resY
+                local edgeMinX, edgeMaxX = DRAG_SCREEN_INSET_X, 1.0 - DRAG_SCREEN_INSET_X
+                local edgeMinY, edgeMaxY = DRAG_SCREEN_INSET_Y, 1.0 - DRAG_SCREEN_INSET_Y
+                local graceMinX = edgeMinX - DRAG_SCREEN_GRACE
+                local graceMaxX = edgeMaxX + DRAG_SCREEN_GRACE
+                local graceMinY = edgeMinY - DRAG_SCREEN_GRACE
+                local graceMaxY = edgeMaxY + DRAG_SCREEN_GRACE
+                local needsMove = false
+                local newX, newY = screenX, screenY
+                -- Clamp to closest point on grace boundary (only change the axis that exceeded)
+                if screenX < graceMinX then
+                    newX = graceMinX
+                    needsMove = true
+                elseif screenX > graceMaxX then
+                    newX = graceMaxX
+                    needsMove = true
+                end
+                if screenY < graceMinY then
+                    newY = graceMinY
+                    needsMove = true
+                elseif screenY > graceMaxY then
+                    newY = graceMaxY
+                    needsMove = true
+                end
+                if needsMove then
+                    print(newX, newY)
+                    SetCursorLocation(newX, newY)
+                end
+            end
+            Wait(500)
+        end
+    end)
     CreateThread(function()
         local pitch = 0.0
         local lastX, lastY = -1, -1
@@ -176,6 +229,8 @@ function StartInteraction(coords, heading)
                         if not INT_ENTITIES[entityHit].disableInteraction then
                             CURRENT_ENTITY = entityHit
                             pitch = GetEntityRotation(CURRENT_ENTITY).x
+                            -- Store fixed drag height so piece doesn't bob while dragging
+                            INT_ENTITIES[entityHit].dragZ = GetEntityCoords(entityHit).z
                         end
                         InteractiveEntityClicked(entityHit)
                     end
@@ -184,7 +239,14 @@ function StartInteraction(coords, heading)
             else
                 local currentEntity = INT_ENTITIES[CURRENT_ENTITY]
                 local minimum, maximum = GetModelDimensions(GetEntityModel(CURRENT_ENTITY))
-                local dragCoords = coords + (rightVector * lerp(-0.85, 0.85, screenX)) - (upVector * (screenY - 1))
+                -- Map cursor from screen region to board plane (region = [inset, 1-inset] per axis)
+                local minX, maxX = DRAG_SCREEN_INSET_X, 1.0 - DRAG_SCREEN_INSET_X
+                local minY, maxY = DRAG_SCREEN_INSET_Y, 1.0 - DRAG_SCREEN_INSET_Y
+                local normX = clamp((screenX - minX) / (maxX - minX), 0.0, 1.0)
+                local normY = clamp((screenY - minY) / (maxY - minY), 0.0, 1.0)
+                local boardX = clamp(lerp(-DRAG_BOARD_HALF_EXTENT, DRAG_BOARD_HALF_EXTENT, normX), -DRAG_BOARD_HALF_EXTENT, DRAG_BOARD_HALF_EXTENT)
+                local boardY = clamp(lerp(-DRAG_BOARD_HALF_EXTENT, DRAG_BOARD_HALF_EXTENT, normY), -DRAG_BOARD_HALF_EXTENT, DRAG_BOARD_HALF_EXTENT)
+                local dragCoords = coords + (rightVector * boardX) - ((forwardVector * boardY) + (forwardVector * -0.35))
                 SelectedInteractiveEntityThread(CURRENT_ENTITY, {
                     coords = coords,
                     heading = heading,
@@ -203,7 +265,6 @@ function StartInteraction(coords, heading)
                         lastY = screenY
                     end
                 else
-                    SetMouseCursorThisFrame()
                     if lastX ~= -1 then
                         screenX = lastX
                         screenY = lastY
@@ -211,11 +272,11 @@ function StartInteraction(coords, heading)
                         lastX = -1
                         lastY = -1
                     else
-                        local forwardVector, rightVector, upVector, position = GetEntityMatrix(CURRENT_ENTITY)
-                        local propCoords = dragCoords
-                        currentEntity.zOffset = GetEntityCoords(CURRENT_ENTITY).z - coords.z
-                        SetEntityCoords(CURRENT_ENTITY, propCoords.x, propCoords.y, propCoords.z - (currentEntity.heightOffset or 0))
+                        -- Use fixed Z (height when piece was picked up) so it doesn't bob while dragging
+                        local dragZ = currentEntity.dragZ or (coords.z)
+                        SetEntityCoords(CURRENT_ENTITY, dragCoords.x, dragCoords.y, dragZ + DRAG_Z_OFFSET)
                         if not IsDisabledControlPressed(0, 24) then
+                            currentEntity.zOffset = dragZ - coords.z
                             UnselectedInteractiveEntity(CURRENT_ENTITY)
                             CURRENT_ENTITY = nil
                         end
@@ -224,15 +285,6 @@ function StartInteraction(coords, heading)
             end
             for k,v in pairs(INT_ENTITIES) do
                 local entityCoords = GetEntityCoords(k)
-                if CURRENT_ENTITY ~= k and not v.disableGravity and (v.zOffset > 0.0 or v.zOffset < 0.0) then
-                    v.zOffset = v.zOffset - 0.050
-                    if v.zOffset <= 0.0 then
-                        v.zOffset = 0.0
-                        SetEntityRotation(k, 0.0, 0.0, heading, 2, true)
-                    end
-                    entityCoords = vector3(entityCoords.x, entityCoords.y, coords.z + v.zOffset)
-                    SetEntityCoordsNoOffset(k, entityCoords.x, entityCoords.y, entityCoords.z)
-                end
                 if v.display then
                     local onScreen, entityScreenX, entityScreenY = GetScreenCoordFromWorldCoord(entityCoords.x, entityCoords.y, entityCoords.z)
                     local rotation = GetEntityRotation(k, 2)

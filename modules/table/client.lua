@@ -24,6 +24,29 @@ function GetChessPieceModel(piece, isWhite)
     return GetHashKey(model), model
 end
 
+function CreateScriptedCamera()
+    if CurrentCamera then ExitScriptedCamera() end
+    local initialCamSettings = {
+        coords = GetGameplayCamCoord(),
+        rotation = GetGameplayCamRot(),
+        fov = GetGameplayCamFov(),
+    }
+    CurrentCamera = CreateCamWithParams("DEFAULT_SCRIPTED_CAMERA", 
+        initialCamSettings.coords.x, initialCamSettings.coords.y, initialCamSettings.coords.z, 
+        initialCamSettings.rotation.x, initialCamSettings.rotation.y, initialCamSettings.rotation.z, initialCamSettings.fov
+    )
+    SetCamActive(CurrentCamera, true)
+    RenderScriptCams(true, false, 0, true, true)
+end
+
+function ExitScriptedCamera(durationValue)
+    local duration = durationValue
+    if duration == nil then duration = 2000 end
+    ClearFocus()
+	DestroyAllCams()
+    RenderScriptCams(false, true, duration, true, false) 
+end
+
 function CreateTableEntity()
     local coords = vector3(-76.3546, -817.9402, 326.1745)
     local heading = 132.6008
@@ -53,6 +76,8 @@ function CreateTableEntity()
         up = upVector,
         position = position,
     }
+    local camCoords = coords + (tableEntity.boardMatrix.forward * -0.35) + vector3(0.0, 0.0, 0.25)
+    StartInteraction(camCoords, heading)
     local order = {
         "pawn", "pawn", "pawn", "pawn", "pawn", "pawn", "pawn", "pawn",
         "rook", "knight", "bishop", "queen", "king", "bishop", "knight", "rook",
@@ -65,7 +90,9 @@ function CreateTableEntity()
         local row = (i <= 8) and 1 or 0
         local col = (i - 1) % 8
         local offCoords = GetBoardSquareCoords(row, col)
-        tableEntity.blackPieces[i] = CreateProp(hash, offCoords.x, offCoords.y, offCoords.z, false, false, false)
+        tableEntity.blackPieces[i] = CreateInteractiveEntity("chess_piece", offCoords, heading, {
+            model = model,
+        })
         FreezeEntityPosition(tableEntity.blackPieces[i], true)
         SetEntityRotation(tableEntity.blackPieces[i], 0.0, 0.0, heading, 2, true)
     end
@@ -75,7 +102,9 @@ function CreateTableEntity()
         local row = (i <= 8) and 6 or 7
         local col = (i - 1) % 8
         local offCoords = GetBoardSquareCoords(row, col)
-        tableEntity.whitePieces[i] = CreateProp(hash, offCoords.x, offCoords.y, offCoords.z, false, false, false)
+        tableEntity.whitePieces[i] = CreateInteractiveEntity("chess_piece", offCoords, heading, {
+            model = model,
+        })
         FreezeEntityPosition(tableEntity.whitePieces[i], true)
         SetEntityRotation(tableEntity.whitePieces[i], 0.0, 0.0, heading, 2, true)
     end
@@ -108,7 +137,65 @@ function DeleteTableEntity()
     DeleteScriptObject(tableEntity.root)
 end
 
+function GetBoardRowColFromCoords(coords)
+    local closest = nil
+    local closestDistance = 1000.0
+    for row = 0, 7 do
+        for col = 0, 7 do
+            local squareCoords = GetBoardSquareCoords(row, col)
+            local distance = #(coords - squareCoords)
+            if distance < closestDistance then
+                closestDistance = distance
+                closest = {row, col}
+            end
+        end
+    end
+    if not closest then return end
+    return closest[1], closest[2]
+end
+
 CreateThread(function()
+    RegisterInteractiveEntity("chess_piece", {
+        init = function(coords, heading, data, params)
+            local chessPiece = CreateProp(params.model, coords.x, coords.y, coords.z, false, false, false)
+            SetEntityCollision(chessPiece, true, true)
+            SetEntityHeading(chessPiece, heading)
+            return chessPiece, {
+                disableGravity = true,
+            }
+        end,
+        entityThread = function(entity, data)
+        end,
+        selectedThread = function(entity, data)
+            local entityCoords = GetEntityCoords(entity)
+            local row, col = GetBoardRowColFromCoords(entityCoords - vector3(0.0, 0.0, 0.075))
+            if not row or not col then return end
+            local coords = GetBoardSquareCoords(row, col)
+            if coords then
+                local square = 0.064
+                local half = square * 0.5
+                local zOffset = 0.042
+                local f, r = tableEntity.boardMatrix.forward, tableEntity.boardMatrix.right
+                -- coords is cell center; root quad at bottom-right corner of the cell
+                local bottomRight = coords + f * half + r * half + vector3(0.0, 0.0, zOffset)
+                local c1 = bottomRight
+                local c2 = bottomRight - f * square
+                local c3 = bottomRight - f * square - r * square
+                local c4 = bottomRight - r * square
+                -- DrawPoly draws a triangle (3 vertices). Winding reversed so front face is on top (visible from above).
+                DrawPoly(c1.x, c1.y, c1.z, c3.x, c3.y, c3.z, c2.x, c2.y, c2.z, 255, 0, 0, 200)
+                DrawPoly(c1.x, c1.y, c1.z, c4.x, c4.y, c4.z, c3.x, c3.y, c3.z, 255, 0, 0, 200)
+            end
+        end,
+        unSelected = function(entity, data)
+            local entityCoords = GetEntityCoords(entity)
+            local row, col = GetBoardRowColFromCoords(entityCoords - vector3(0.0, 0.0, 0.075))
+            if not row or not col then return end
+            local coords = GetBoardSquareCoords(row, col)
+            if not coords then return end
+            SetEntityCoords(entity, coords.x, coords.y, coords.z)
+        end,
+    })
     local currentRow = 0
     local currentCol = 0
     Wait(1000)
@@ -131,30 +218,9 @@ CreateThread(function()
     --                 end
     --                 Wait(delayMs)
     --             end
-    --         end
+    --     unselected    end
     --     end
     -- end)
-    CreateThread(function()
-        while true do
-            local coords = GetBoardSquareCoords(currentRow, currentCol)
-            if coords then
-                local square = 0.064
-                local half = square * 0.5
-                local zOffset = 0.042
-                local f, r = tableEntity.boardMatrix.forward, tableEntity.boardMatrix.right
-                -- coords is cell center; root quad at bottom-right corner of the cell
-                local bottomRight = coords + f * half + r * half + vector3(0.0, 0.0, zOffset)
-                local c1 = bottomRight
-                local c2 = bottomRight - f * square
-                local c3 = bottomRight - f * square - r * square
-                local c4 = bottomRight - r * square
-                -- DrawPoly draws a triangle (3 vertices). Winding reversed so front face is on top (visible from above).
-                DrawPoly(c1.x, c1.y, c1.z, c3.x, c3.y, c3.z, c2.x, c2.y, c2.z, 255, 0, 0, 200)
-                DrawPoly(c1.x, c1.y, c1.z, c4.x, c4.y, c4.z, c3.x, c3.y, c3.z, 255, 0, 0, 200)
-            end
-            Wait(0)
-        end
-    end)
 end)
 
 AddEventHandler("onResourceStop", function(resourceName)
