@@ -99,3 +99,9 @@ Config.Peds = {
         model = "s_m_m_bouncer_01",
     },
 }
+
+Config.Chess = {
+    CPU_Difficulty = "medium", -- "easy", "medium", "hard"
+    MoveAnimationDuration = 500, -- milliseconds
+    CPU_ThinkDelay = 1000, -- milliseconds for realism
+}

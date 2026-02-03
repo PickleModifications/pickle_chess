@@ -124,7 +124,7 @@ function CreateInteractiveEntity(entType, coords, heading, params)
         entityData[k] = v
     end
     INT_ENTITIES[entity] = entityData
-    print("Created interactive entity: ", entType, json.encode(entityData, {indent = true}))
+    -- print("Created interactive entity: ", entType, json.encode(entityData, {indent = true}))
     return entity
 end
 
@@ -226,13 +226,31 @@ function StartInteraction(coords, heading)
                 -- DrawMarker(1, dragCoords.x, dragCoords.y, dragCoords.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 255, 0, 0, 255, false, false, 2)
                 if IsDisabledControlJustPressed(0, 24)  then
                     if hit and DoesEntityExist(entityHit) and INT_ENTITIES[entityHit] then
-                        if not INT_ENTITIES[entityHit].disableInteraction then
-                            CURRENT_ENTITY = entityHit
-                            pitch = GetEntityRotation(CURRENT_ENTITY).x
-                            -- Store fixed drag height so piece doesn't bob while dragging
-                            INT_ENTITIES[entityHit].dragZ = GetEntityCoords(entityHit).z
+                        -- Check if it's CPU turn or wrong player's turn
+                        if chessGame and chessGame.isCPUTurn then
+                            -- Don't allow interaction during CPU turn
+                        elseif chessGame and chessGame.currentTurn == "black" then
+                            -- Check if trying to move black piece (CPU's pieces)
+                            local isWhite = GetChessPieceFromEntity(entityHit)
+                            if isWhite == false then
+                                -- Don't allow moving CPU pieces
+                            else
+                                if not INT_ENTITIES[entityHit].disableInteraction then
+                                    CURRENT_ENTITY = entityHit
+                                    pitch = GetEntityRotation(CURRENT_ENTITY).x
+                                    INT_ENTITIES[entityHit].dragZ = GetEntityCoords(entityHit).z
+                                end
+                                InteractiveEntityClicked(entityHit)
+                            end
+                        else
+                            if not INT_ENTITIES[entityHit].disableInteraction then
+                                CURRENT_ENTITY = entityHit
+                                pitch = GetEntityRotation(CURRENT_ENTITY).x
+                                -- Store fixed drag height so piece doesn't bob while dragging
+                                INT_ENTITIES[entityHit].dragZ = GetEntityCoords(entityHit).z
+                            end
+                            InteractiveEntityClicked(entityHit)
                         end
-                        InteractiveEntityClicked(entityHit)
                     end
                 end
                 SetMouseCursorThisFrame()
