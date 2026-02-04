@@ -88,15 +88,44 @@ function GetChessPieceFromEntity(entity)
     if not tableEntity then return end
     local modelHash = GetEntityModel(entity)
     local model, piece, offset = GetChessPieceFromHash(modelHash)
-    for i=1, #tableEntity.whitePieces do
-        if tableEntity.whitePieces[i] == entity then
-            return true, i, model, piece, offset
+    local colorFromModel = nil
+    if model then
+        if string.find(model, "prop_chess_w_") then
+            colorFromModel = true
+        elseif string.find(model, "prop_chess_b_") then
+            colorFromModel = false
         end
     end
-    for i=1, #tableEntity.blackPieces do
-        if tableEntity.blackPieces[i] == entity then
-            return false, i, model, piece, offset
+    
+    local whiteIndex = nil
+    local blackIndex = nil
+    if tableEntity.whitePieces then
+        for i=1, #tableEntity.whitePieces do
+            if tableEntity.whitePieces[i] == entity then
+                whiteIndex = i
+                break
+            end
         end
+    end
+    if tableEntity.blackPieces then
+        for i=1, #tableEntity.blackPieces do
+            if tableEntity.blackPieces[i] == entity then
+                blackIndex = i
+                break
+            end
+        end
+    end
+    
+    if colorFromModel ~= nil then
+        local index = colorFromModel and whiteIndex or blackIndex
+        return colorFromModel, index, model, piece, offset
+    end
+    
+    if whiteIndex then
+        return true, whiteIndex, model, piece, offset
+    end
+    if blackIndex then
+        return false, blackIndex, model, piece, offset
     end
 end
 
@@ -280,6 +309,36 @@ function ExecuteCPUMove()
             if Config.Debug then print("[Chess] ExecuteCPUMove: No valid CPU move found") end
             chessGame.isCPUTurn = false
             return
+        end
+        
+        -- Validate CPU move: ensure it's not moving to a square with a friendly piece
+        local targetPiece = GetPieceAt(cpuMove.toRow, cpuMove.toCol)
+        local movingPiece = GetPieceAt(cpuMove.fromRow, cpuMove.fromCol)
+        if targetPiece and targetPiece.isWhite == movingPiece.isWhite then
+            if Config.Debug then
+                print(string.format("[Chess] ExecuteCPUMove: ERROR - CPU trying to move to square with friendly piece! (%d,%d)->(%d,%d), target=%s", 
+                    cpuMove.fromRow, cpuMove.fromCol, cpuMove.toRow, cpuMove.toCol, targetPiece.piece))
+            end
+            -- Try to get a different move
+            local allMoves = GetAllValidMoves(false) -- CPU is black
+            local validMoves = {}
+            for _, move in ipairs(allMoves) do
+                local target = GetPieceAt(move.toRow, move.toCol)
+                if not target or target.isWhite ~= false then -- Only moves to empty squares or opponent pieces
+                    table.insert(validMoves, move)
+                end
+            end
+            if #validMoves > 0 then
+                cpuMove = validMoves[math.random(#validMoves)]
+                if Config.Debug then
+                    print(string.format("[Chess] ExecuteCPUMove: Using alternative move (%d,%d)->(%d,%d)", 
+                        cpuMove.fromRow, cpuMove.fromCol, cpuMove.toRow, cpuMove.toCol))
+                end
+            else
+                if Config.Debug then print("[Chess] ExecuteCPUMove: No alternative moves available, aborting") end
+                chessGame.isCPUTurn = false
+                return
+            end
         end
         
         if Config.Debug then
@@ -486,7 +545,7 @@ CreateThread(function()
                 end
                 -- Always sync before getting valid moves to ensure board is up to date
                 if tableEntity and tableEntity.whitePieces and tableEntity.blackPieces then
-                    SyncBoardWithPieces()
+                    SyncBoardWithPieces(entity)
                 end
                 
                 -- Find and move this piece to (row,col) without full sync (preserve other pieces' positions)
@@ -514,7 +573,7 @@ CreateThread(function()
                     }
                 end
                 -- Sync board first to ensure all pieces are in correct positions for capture detection
-                SyncBoardWithPieces()
+                SyncBoardWithPieces(entity)
                 
                 -- Debug: Check board state after sync, before placing our piece
                 if Config.Debug then
