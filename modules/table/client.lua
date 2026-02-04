@@ -2,6 +2,7 @@ tableEntity = {} -- Global so chess module can access it
 local pieceOriginalPositions = {} -- Store original positions for move validation
 local validMovesDisplay = {} -- Store valid moves to display
 local isAnimating = false
+local pendingPromotion = nil
 
 function GetBoardSquareCoords(row, col)
     if not tableEntity.boardMatrix then return nil end
@@ -129,6 +130,52 @@ function GetChessPieceFromEntity(entity)
     end
 end
 
+local function ApplyPromotion(pieceData, entity, isWhite, newPiece)
+    local hash, model, newOffset = GetChessPieceModel(newPiece, isWhite)
+    local newCoords = GetBoardSquareCoords(pieceData.row, pieceData.col)
+    DeleteEntity(entity)
+    local newEntity = CreateProp(hash, newCoords.x + newOffset.coords.x, newCoords.y + newOffset.coords.y, newCoords.z + newOffset.coords.z, false, false, false)
+    -- Disable collision for opponent pieces (black) so user can click through them
+    SetEntityCollision(newEntity, isWhite, isWhite)
+    FreezeEntityPosition(newEntity, true)
+    SetEntityRotation(newEntity, 0.0, 0.0, tableEntity.heading + newOffset.rotation.z, 2, true)
+    pieceData.pieceEntry.entity = newEntity
+    pieceData.pieceEntry.piece = newPiece
+    pieceData.pieceEntry.needsPromotion = nil
+    
+    -- Update piece arrays
+    if isWhite then
+        for i = 1, #tableEntity.whitePieces do
+            if tableEntity.whitePieces[i] == entity then
+                tableEntity.whitePieces[i] = newEntity
+                break
+            end
+        end
+    else
+        for i = 1, #tableEntity.blackPieces do
+            if tableEntity.blackPieces[i] == entity then
+                tableEntity.blackPieces[i] = newEntity
+                break
+            end
+        end
+    end
+end
+
+local function RequestPromotion(pieceEntry, row, col, isWhite)
+    pendingPromotion = {
+        pieceEntry = pieceEntry,
+        entity = pieceEntry.entity,
+        row = row,
+        col = col,
+        isWhite = isWhite
+    }
+    chessGame.awaitingPromotion = true
+    SendNUIMessage({
+        type = "chessPromotion",
+        data = {isWhite = isWhite}
+    })
+end
+
 function CreateScriptedCamera()
     if CurrentCamera then ExitScriptedCamera() end
     local initialCamSettings = {
@@ -183,8 +230,16 @@ function CreateTableEntity()
         up = upVector,
         position = position,
     }
-    local camCoords = coords + (tableEntity.boardMatrix.forward * -0.35) + vector3(0.0, 0.0, 0.25)
-    StartInteraction(camCoords, heading)
+    local camCoords = coords
+    local camHeading = heading
+    local isWhite = true
+    if isWhite then
+        camCoords = camCoords + (tableEntity.boardMatrix.forward * 0.35) + vector3(0.0, 0.0, 0.25)
+        camHeading = heading + 180.0
+    else
+        camCoords = camCoords + (tableEntity.boardMatrix.forward * -0.35) + vector3(0.0, 0.0, 0.25)
+    end
+    StartInteraction(camCoords, camHeading)
     
     -- Initialize chess game
     InitializeChessBoard()
@@ -223,6 +278,8 @@ function CreateTableEntity()
     -- Sync board state after pieces are created
     Wait(100)
     SyncBoardWithPieces()
+    chessGame.positionHistory = {}
+    UpdatePositionHistory()
 end
 
 function DeleteTableEntity()
@@ -246,7 +303,7 @@ end
 function AnimatePieceMove(entity, fromCoords, toCoords, offset, duration, callback)
     duration = duration or Config.Chess.MoveAnimationDuration
     local startTime = GetGameTimer()
-    local startCoords = vector3(fromCoords.x, fromCoords.y, fromCoords.z)
+    local startCoords = vector3(fromCoords.x, fromCoords.y, toCoords.z + offset.coords.z)
     local endCoords = vector3(toCoords.x + offset.coords.x, toCoords.y + offset.coords.y, toCoords.z + offset.coords.z)
     
     CreateThread(function()
@@ -278,6 +335,11 @@ function ExecuteCPUMove()
             tostring(chessGame.isCPUTurn), chessGame.currentTurn or "nil", chessGame.gameState or "nil"))
     end
     
+    if chessGame.awaitingPromotion then
+        if Config.Debug then print("[Chess] ExecuteCPUMove: Waiting for promotion choice, returning") end
+        return
+    end
+    
     if chessGame.isCPUTurn then 
         if Config.Debug then print("[Chess] ExecuteCPUMove: Already CPU turn, returning") end
         return 
@@ -286,8 +348,9 @@ function ExecuteCPUMove()
         if Config.Debug then print(string.format("[Chess] ExecuteCPUMove: Not black's turn (currentTurn=%s), returning", chessGame.currentTurn or "nil")) end
         return 
     end
-    if chessGame.gameState ~= "playing" then 
-        if Config.Debug then print(string.format("[Chess] ExecuteCPUMove: Game not playing (gameState=%s), returning", chessGame.gameState or "nil")) end
+    -- Allow CPU to move when gameState is "playing" or "check" (CPU must respond to check)
+    if chessGame.gameState ~= "playing" and chessGame.gameState ~= "check" then 
+        if Config.Debug then print(string.format("[Chess] ExecuteCPUMove: Game not in playable state (gameState=%s), returning", chessGame.gameState or "nil")) end
         return 
     end
     
@@ -368,8 +431,12 @@ function ExecuteCPUMove()
                 end
             end
             
-            -- Handle captured piece
+            -- Handle captured piece (including en passant)
             local capturedPiece = GetPieceAt(cpuMove.toRow, cpuMove.toCol)
+            if cpuMove.moveData and cpuMove.moveData.enPassant and piece then
+                local capRow = piece.isWhite and (cpuMove.toRow + 1) or (cpuMove.toRow - 1)
+                capturedPiece = GetPieceAt(capRow, cpuMove.toCol)
+            end
             if capturedPiece and capturedPiece.entity then
                 CreateThread(function()
                     Wait(Config.Chess.MoveAnimationDuration / 2)
@@ -388,28 +455,19 @@ function ExecuteCPUMove()
             -- Check for pawn promotion after move
             local promotedPiece = GetPieceAt(cpuMove.toRow, cpuMove.toCol)
             local entityToAnimate = piece.entity
-            
-            if promotedPiece and promotedPiece.needsPromotion then
-                local isWhite = promotedPiece.isWhite
-                local hash, model, newOffset = GetChessPieceModel("queen", isWhite)
-                local oldEntity = piece.entity
-                DeleteEntity(oldEntity)
-                local newCoords = GetBoardSquareCoords(cpuMove.toRow, cpuMove.toCol)
-                local newEntity = CreateProp(hash, newCoords.x + newOffset.coords.x, newCoords.y + newOffset.coords.y, newCoords.z + newOffset.coords.z, false, false, false)
-                FreezeEntityPosition(newEntity, true)
-                SetEntityRotation(newEntity, 0.0, 0.0, tableEntity.heading + newOffset.rotation.z, 2, true)
-                promotedPiece.entity = newEntity
+            if promotedPiece and (promotedPiece.needsPromotion or (cpuMove.moveData and cpuMove.moveData.promotion)) then
+                local hadNeedsPromotion = promotedPiece.needsPromotion
+                local promotionPiece = (cpuMove.moveData and cpuMove.moveData.promotion) or "queen"
+                ApplyPromotion({
+                    pieceEntry = promotedPiece,
+                    row = cpuMove.toRow,
+                    col = cpuMove.toCol
+                }, piece.entity, promotedPiece.isWhite, promotionPiece)
+                entityToAnimate = promotedPiece.entity
                 promotedPiece.needsPromotion = nil
-                entityToAnimate = newEntity
-                
-                -- Update piece arrays
-                if not isWhite then
-                    for i = 1, #tableEntity.blackPieces do
-                        if tableEntity.blackPieces[i] == oldEntity then
-                            tableEntity.blackPieces[i] = newEntity
-                            break
-                        end
-                    end
+                chessGame.awaitingPromotion = false
+                if hadNeedsPromotion then
+                    UpdatePositionHistory()
                 end
             end
             
@@ -491,6 +549,17 @@ CreateThread(function()
                 gameStateText = chessGame.currentTurn == "white" and "Checkmate! You lost!" or "Checkmate! You won!"
             elseif chessGame.gameState == "stalemate" then
                 gameStateText = "Stalemate! Game is a draw."
+            elseif chessGame.gameState == "draw" then
+                local reason = chessGame.drawReason or "draw"
+                if reason == "50-move" then
+                    gameStateText = "Draw by 50-move rule."
+                elseif reason == "threefold" then
+                    gameStateText = "Draw by repetition."
+                elseif reason == "insufficient" then
+                    gameStateText = "Draw by insufficient material."
+                else
+                    gameStateText = "Draw."
+                end
             elseif chessGame.gameState == "check" then
                 gameStateText = "Check!"
             end
@@ -516,7 +585,9 @@ CreateThread(function()
         init = function(coords, heading, data, params)
             local chessPiece = CreateProp(params.model, coords.x, coords.y, coords.z, false, false, false)
             SetEntityCoordsNoOffset(chessPiece, coords.x, coords.y, coords.z, false, false, false, false)
-            SetEntityCollision(chessPiece, true, true)
+            -- Disable collision for opponent pieces (black) so user can click through them to select pieces behind
+            local isOpponentPiece = params.model and string.find(params.model, "prop_chess_b_") ~= nil
+            SetEntityCollision(chessPiece, not isOpponentPiece, not isOpponentPiece)
             SetEntityHeading(chessPiece, heading)
             return chessPiece, {
                 disableGravity = true,
@@ -526,10 +597,14 @@ CreateThread(function()
         end,
         selectedThread = function(entity, data)
             -- Check if it's player's turn and piece belongs to player
-            if chessGame.isCPUTurn or chessGame.currentTurn ~= "white" then return end
+            if chessGame.awaitingPromotion or chessGame.isCPUTurn or chessGame.currentTurn ~= "white" then return end
             
             local isWhite, index, model, piece, offset = GetChessPieceFromEntity(entity)
-            if not isWhite then return end -- Can't select black pieces
+            -- Prevent interaction with opponent pieces (user is white, can only move white pieces)
+            if not isWhite then 
+                if Config.Debug then print("[Chess] selectedThread: Blocked - Cannot select opponent's (black) pieces") end
+                return 
+            end
             
             local entityCoords = GetEntityCoords(entity)
             local row, col = GetBoardRowColFromCoords(entityCoords - vector3(0.0, 0.0, 0.075))
@@ -715,7 +790,7 @@ CreateThread(function()
             validMovesDisplay[entity] = nil
             
             -- Check if it's player's turn
-            if chessGame.isCPUTurn or chessGame.currentTurn ~= "white" then
+            if chessGame.awaitingPromotion or chessGame.isCPUTurn or chessGame.currentTurn ~= "white" then
                 -- Restore to original position
                 if pieceOriginalPositions[entity] then
                     local orig = pieceOriginalPositions[entity]
@@ -840,8 +915,12 @@ CreateThread(function()
             local fromCoords = GetBoardSquareCoords(fromRow, fromCol)
             local toCoords = GetBoardSquareCoords(toRow, toCol)
             
-            -- Handle captured piece
+            -- Handle captured piece (including en passant)
             local capturedPiece = GetPieceAt(toRow, toCol)
+            if moveData and moveData.enPassant then
+                local capRow = isWhite and (toRow + 1) or (toRow - 1)
+                capturedPiece = GetPieceAt(capRow, toCol)
+            end
             if capturedPiece and capturedPiece.entity then
                 CreateThread(function()
                     Wait(Config.Chess.MoveAnimationDuration / 2)
@@ -916,33 +995,7 @@ CreateThread(function()
                 -- Handle pawn promotion
                 local piece = GetPieceAt(toRow, toCol)
                 if piece and piece.needsPromotion and piece.entity == entity then
-                    local isWhite = piece.isWhite
-                    local hash, model, newOffset = GetChessPieceModel("queen", isWhite)
-                    local coords = GetEntityCoords(entity)
-                    DeleteEntity(entity)
-                    local newCoords = GetBoardSquareCoords(toRow, toCol)
-                    local newEntity = CreateProp(hash, newCoords.x + newOffset.coords.x, newCoords.y + newOffset.coords.y, newCoords.z + newOffset.coords.z, false, false, false)
-                    FreezeEntityPosition(newEntity, true)
-                    SetEntityRotation(newEntity, 0.0, 0.0, tableEntity.heading + newOffset.rotation.z, 2, true)
-                    piece.entity = newEntity
-                    piece.needsPromotion = nil
-                    
-                    -- Update piece arrays
-                    if isWhite then
-                        for i = 1, #tableEntity.whitePieces do
-                            if tableEntity.whitePieces[i] == entity then
-                                tableEntity.whitePieces[i] = newEntity
-                                break
-                            end
-                        end
-                    else
-                        for i = 1, #tableEntity.blackPieces do
-                            if tableEntity.blackPieces[i] == entity then
-                                tableEntity.blackPieces[i] = newEntity
-                                break
-                            end
-                        end
-                    end
+                    RequestPromotion(piece, toRow, toCol, piece.isWhite)
                 end
                 
                 -- ExecuteMove already updated board state correctly
@@ -999,10 +1052,14 @@ CreateThread(function()
                         ShowNotification("Checkmate! You won!")
                     elseif chessGame.gameState == "stalemate" then
                         ShowNotification("Stalemate! Game is a draw.")
+                    elseif chessGame.gameState == "draw" then
+                        ShowNotification("Draw.")
                     elseif chessGame.gameState == "check" then
                         ShowNotification("Check!")
+                        -- CPU is in check - must respond
+                        ExecuteCPUMove()
                     else
-                        -- CPU's turn
+                        -- CPU's turn (gameState == "playing")
                         ExecuteCPUMove()
                     end
                 else
@@ -1015,6 +1072,26 @@ CreateThread(function()
     })
     Wait(1000)
     CreateTableEntity()
+end)
+
+RegisterNUICallback("chessPromotionSelect", function(data, cb)
+    local choice = data and data.piece or "queen"
+    if pendingPromotion and pendingPromotion.pieceEntry and pendingPromotion.entity then
+        ApplyPromotion({
+            pieceEntry = pendingPromotion.pieceEntry,
+            row = pendingPromotion.row,
+            col = pendingPromotion.col
+        }, pendingPromotion.entity, pendingPromotion.isWhite, choice)
+        pendingPromotion = nil
+        chessGame.awaitingPromotion = false
+        UpdatePositionHistory()
+        UpdateGameState()
+        -- CPU's turn after promotion - call ExecuteCPUMove if game is still active
+        if chessGame.gameState == "playing" or chessGame.gameState == "check" then
+            ExecuteCPUMove()
+        end
+    end
+    if cb then cb({ok = true}) end
 end)
 
 AddEventHandler("onResourceStop", function(resourceName)

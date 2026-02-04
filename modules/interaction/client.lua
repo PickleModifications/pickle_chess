@@ -136,7 +136,7 @@ function StartInteraction(coords, heading)
     DeleteEntity(temp)
     CreateScriptedCamera()
     local camCoords = coords
-    local camRotation = vector3(-55.0, 0.0, heading)
+    local camRotation = vector3(-60.0, 0.0, heading)
     SetCamParams(CurrentCamera, camCoords.x, camCoords.y, camCoords.z,
         camRotation.x, camRotation.y, camRotation.z, 90.0, 
         0, 0, 0, 2
@@ -226,30 +226,37 @@ function StartInteraction(coords, heading)
                 -- DrawMarker(1, dragCoords.x, dragCoords.y, dragCoords.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 255, 0, 0, 255, false, false, 2)
                 if IsDisabledControlJustPressed(0, 24)  then
                     if hit and DoesEntityExist(entityHit) and INT_ENTITIES[entityHit] then
-                        -- Check if it's CPU turn or wrong player's turn
+                        -- Prevent interaction during CPU turn
                         if chessGame and chessGame.isCPUTurn then
                             -- Don't allow interaction during CPU turn
-                        elseif chessGame and chessGame.currentTurn == "black" then
-                            -- Check if trying to move black piece (CPU's pieces)
+                            if Config.Debug then print("[Chess] Interaction blocked: CPU turn") end
+                        -- Prevent interaction with opponent pieces (user is white, can only move white pieces)
+                        elseif chessGame and chessGame.currentTurn == "white" then
                             local isWhite = GetChessPieceFromEntity(entityHit)
-                            if isWhite == false then
-                                -- Don't allow moving CPU pieces
-                            else
+                            if isWhite == true then
+                                -- User's turn and user's piece - allow interaction
                                 if not INT_ENTITIES[entityHit].disableInteraction then
                                     CURRENT_ENTITY = entityHit
                                     pitch = GetEntityRotation(CURRENT_ENTITY).x
+                                    -- Store fixed drag height so piece doesn't bob while dragging
                                     INT_ENTITIES[entityHit].dragZ = GetEntityCoords(entityHit).z
                                 end
                                 InteractiveEntityClicked(entityHit)
+                            else
+                                -- Trying to interact with opponent's (black) piece - block it
+                                if Config.Debug then print("[Chess] Interaction blocked: Cannot move opponent's pieces") end
+                                -- Show notification to user
+                                if ShowNotification then
+                                    ShowNotification("You cannot move your opponent's pieces!")
+                                end
                             end
                         else
-                            if not INT_ENTITIES[entityHit].disableInteraction then
-                                CURRENT_ENTITY = entityHit
-                                pitch = GetEntityRotation(CURRENT_ENTITY).x
-                                -- Store fixed drag height so piece doesn't bob while dragging
-                                INT_ENTITIES[entityHit].dragZ = GetEntityCoords(entityHit).z
+                            -- Not user's turn (black's turn) - don't allow any interaction
+                            if Config.Debug then print("[Chess] Interaction blocked: Not your turn") end
+                            -- Show notification to user
+                            if ShowNotification then
+                                ShowNotification("Wait for your turn!")
                             end
-                            InteractiveEntityClicked(entityHit)
                         end
                     end
                 end

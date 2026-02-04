@@ -3,6 +3,7 @@ import { Translate } from "./providers/locale/Locale";
 import { InteractiveEntityDisplay } from "./components/InteractiveEntityDisplay";
 import { OrderDisplay } from "./components/OrderDisplay";
 import { useNuiEvent } from "./providers/nui/useNui";
+import { fetchNui } from "./providers/nui/fetchNui";
 import { useState } from "react";
 
 export function GetItemLabel({item} : {item: string}) {
@@ -65,6 +66,7 @@ export function AppControls({controls} : {controls?: {key: string, label: any, p
 
 function App() {
   const [controls, setControls] = useState<{key: string, label: any, progress?: number}[] | null>(null);
+  const [promotion, setPromotion] = useState<{isWhite: boolean} | null>(null);
 
   useNuiEvent("updateControls", (data: {controls?: {key: string, label: string, progress?: number}[]}) => {
     if (data && data.controls && Array.isArray(data.controls)) {
@@ -78,11 +80,37 @@ function App() {
     }
   });
 
+  useNuiEvent("chessPromotion", (eventData: {data?: {isWhite: boolean}}) => {
+    if (eventData && eventData.data) {
+      setPromotion({isWhite: !!eventData.data.isWhite});
+    } else {
+      setPromotion(null);
+    }
+  });
+
+  const choosePromotion = async (piece: string) => {
+    await fetchNui("chessPromotionSelect", {piece});
+    setPromotion(null);
+  };
+
   return (
     <div className="dark w-screen h-screen absolute text-primary top-0 left-0">
       {controls && controls.length > 0 && <AppControls controls={controls} />}
       <InteractiveEntityDisplay />
       <OrderDisplay />
+      {promotion && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/60">
+          <div className="bg-background p-4 rounded-md flex flex-col gap-3">
+            <div className="font-bold text-lg text-primary">Choose promotion</div>
+            <div className="flex gap-2">
+              <button className="bg-primary text-black px-3 py-2 rounded" onClick={() => choosePromotion("queen")}>Queen</button>
+              <button className="bg-primary text-black px-3 py-2 rounded" onClick={() => choosePromotion("rook")}>Rook</button>
+              <button className="bg-primary text-black px-3 py-2 rounded" onClick={() => choosePromotion("bishop")}>Bishop</button>
+              <button className="bg-primary text-black px-3 py-2 rounded" onClick={() => choosePromotion("knight")}>Knight</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

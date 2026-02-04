@@ -5,6 +5,16 @@ chessGame = {
     gameState = "playing", -- "playing", "checkmate", "stalemate", "check"
     whiteKingPos = {row = 7, col = 4},
     blackKingPos = {row = 0, col = 4},
+    enPassantTarget = nil, -- {row, col} if available
+    castlingRights = {
+        white = {kingSide = true, queenSide = true},
+        black = {kingSide = true, queenSide = true}
+    },
+    halfmoveClock = 0,
+    fullmoveNumber = 1,
+    positionHistory = {},
+    drawReason = nil,
+    awaitingPromotion = false,
     lastMove = nil, -- {fromRow, fromCol, toRow, toCol, piece, isWhite}
     isCPUTurn = false,
 }
@@ -27,7 +37,19 @@ function InitializeChessBoard()
     chessGame.gameState = "playing"
     chessGame.whiteKingPos = {row = 7, col = 4}
     chessGame.blackKingPos = {row = 0, col = 4}
+    chessGame.enPassantTarget = nil
+    chessGame.castlingRights = {
+        white = {kingSide = true, queenSide = true},
+        black = {kingSide = true, queenSide = true}
+    }
+    chessGame.halfmoveClock = 0
+    chessGame.fullmoveNumber = 1
+    chessGame.positionHistory = {}
+    chessGame.drawReason = nil
+    chessGame.awaitingPromotion = false
     chessGame.isCPUTurn = false
+
+    UpdatePositionHistory()
 end
 
 -- Sync board state with actual piece positions
@@ -206,6 +228,58 @@ function GetPieceAt(row, col)
     return chessGame.board[row] and chessGame.board[row][col]
 end
 
+local function GetPositionKey()
+    local rows = {}
+    for row = 0, 7 do
+        local empty = 0
+        local rowStr = ""
+        for col = 0, 7 do
+            local piece = GetPieceAt(row, col)
+            if piece then
+                if empty > 0 then
+                    rowStr = rowStr .. tostring(empty)
+                    empty = 0
+                end
+                local letter = "p"
+                if piece.piece == "rook" then letter = "r"
+                elseif piece.piece == "knight" then letter = "n"
+                elseif piece.piece == "bishop" then letter = "b"
+                elseif piece.piece == "queen" then letter = "q"
+                elseif piece.piece == "king" then letter = "k"
+                end
+                if piece.isWhite then
+                    letter = string.upper(letter)
+                end
+                rowStr = rowStr .. letter
+            else
+                empty = empty + 1
+            end
+        end
+        if empty > 0 then
+            rowStr = rowStr .. tostring(empty)
+        end
+        table.insert(rows, rowStr)
+    end
+    local boardKey = table.concat(rows, "/")
+    local sideKey = chessGame.currentTurn == "white" and "w" or "b"
+    local castlingKey = ""
+    if chessGame.castlingRights.white.kingSide then castlingKey = castlingKey .. "K" end
+    if chessGame.castlingRights.white.queenSide then castlingKey = castlingKey .. "Q" end
+    if chessGame.castlingRights.black.kingSide then castlingKey = castlingKey .. "k" end
+    if chessGame.castlingRights.black.queenSide then castlingKey = castlingKey .. "q" end
+    if castlingKey == "" then castlingKey = "-" end
+    local epKey = "-"
+    if chessGame.enPassantTarget then
+        epKey = tostring(chessGame.enPassantTarget.row) .. "," .. tostring(chessGame.enPassantTarget.col)
+    end
+    return boardKey .. " " .. sideKey .. " " .. castlingKey .. " " .. epKey
+end
+
+function UpdatePositionHistory()
+    local key = GetPositionKey()
+    chessGame.positionHistory[key] = (chessGame.positionHistory[key] or 0) + 1
+end
+
 -- Check if square is attacked by opponent
 function IsSquareAttackedPseudo(row, col, byWhite, skipSync)
     -- Ensure board is synced before checking attacks unless told to skip
@@ -333,6 +407,17 @@ function GenerateMovesForPiece(row, col, piece, isWhite, attackOnly)
                         if Config.Debug then
                             print(string.format("[Chess] Pawn at (%d,%d) can capture %s at (%d,%d)", 
                                 row, col, target.piece, captureRow, captureCol))
+                        end
+                    end
+                    
+                    -- En passant capture
+                    if chessGame.enPassantTarget and
+                       chessGame.enPassantTarget.row == captureRow and
+                       chessGame.enPassantTarget.col == captureCol then
+                        local capturedRow = isWhite and (captureRow + 1) or (captureRow - 1)
+                        local capturedPawn = GetPieceAt(capturedRow, captureCol)
+                        if capturedPawn and capturedPawn.piece == "pawn" and capturedPawn.isWhite ~= isWhite then
+                            table.insert(moves, {toRow = captureRow, toCol = captureCol, enPassant = true})
                         end
                     end
                 end
@@ -471,6 +556,82 @@ function GenerateMovesForPiece(row, col, piece, isWhite, attackOnly)
                 end
             end
         end
+        
+        -- Castling (only if not attackOnly)
+        if not attackOnly then
+            local castling = chessGame.castlingRights[isWhite and "white" or "black"]
+            local kingPiece = GetPieceAt(row, col)
+            
+            if Config.Debug and piece == "king" then
+                print(string.format("[Chess] GenerateMovesForPiece: King at (%d,%d), hasMoved=%s, castlingRights=%s", 
+                    row, col, tostring(kingPiece and kingPiece.hasMoved), 
+                    castling and (tostring(castling.kingSide) .. "/" .. tostring(castling.queenSide)) or "nil"))
+            end
+            
+            if kingPiece and not kingPiece.hasMoved and castling then
+                -- King side castling (O-O)
+                if castling.kingSide then
+                    local rook = GetPieceAt(row, 7)
+                    if rook and rook.piece == "rook" and rook.isWhite == isWhite and not rook.hasMoved then
+                        if not GetPieceAt(row, 5) and not GetPieceAt(row, 6) then
+                            if not IsSquareAttacked(row, 4, not isWhite, true, true) and
+                               not IsSquareAttacked(row, 5, not isWhite, true, true) and
+                               not IsSquareAttacked(row, 6, not isWhite, true, true) then
+                                table.insert(moves, {toRow = row, toCol = 6, castling = "kingSide"})
+                                if Config.Debug then
+                                    print(string.format("[Chess] GenerateMovesForPiece: Added king-side castling move for %s king at (%d,%d)", 
+                                        isWhite and "white" or "black", row, col))
+                                end
+                            else
+                                if Config.Debug then
+                                    print(string.format("[Chess] GenerateMovesForPiece: King-side castling blocked - squares attacked"))
+                                end
+                            end
+                        else
+                            if Config.Debug then
+                                print(string.format("[Chess] GenerateMovesForPiece: King-side castling blocked - squares occupied"))
+                            end
+                        end
+                    else
+                        if Config.Debug then
+                            print(string.format("[Chess] GenerateMovesForPiece: King-side castling blocked - rook check failed (rook=%s, hasMoved=%s)", 
+                                rook and rook.piece or "nil", rook and tostring(rook.hasMoved) or "nil"))
+                        end
+                    end
+                end
+                
+                -- Queen side castling (O-O-O)
+                if castling.queenSide then
+                    local rook = GetPieceAt(row, 0)
+                    if rook and rook.piece == "rook" and rook.isWhite == isWhite and not rook.hasMoved then
+                        if not GetPieceAt(row, 1) and not GetPieceAt(row, 2) and not GetPieceAt(row, 3) then
+                            if not IsSquareAttacked(row, 4, not isWhite, true, true) and
+                               not IsSquareAttacked(row, 3, not isWhite, true, true) and
+                               not IsSquareAttacked(row, 2, not isWhite, true, true) then
+                                table.insert(moves, {toRow = row, toCol = 2, castling = "queenSide"})
+                                if Config.Debug then
+                                    print(string.format("[Chess] GenerateMovesForPiece: Added queen-side castling move for %s king at (%d,%d)", 
+                                        isWhite and "white" or "black", row, col))
+                                end
+                            else
+                                if Config.Debug then
+                                    print(string.format("[Chess] GenerateMovesForPiece: Queen-side castling blocked - squares attacked"))
+                                end
+                            end
+                        else
+                            if Config.Debug then
+                                print(string.format("[Chess] GenerateMovesForPiece: Queen-side castling blocked - squares occupied"))
+                            end
+                        end
+                    else
+                        if Config.Debug then
+                            print(string.format("[Chess] GenerateMovesForPiece: Queen-side castling blocked - rook check failed (rook=%s, hasMoved=%s)", 
+                                rook and rook.piece or "nil", rook and tostring(rook.hasMoved) or "nil"))
+                        end
+                    end
+                end
+            end
+        end
     end
     
     return moves
@@ -501,7 +662,7 @@ function GetValidMoves(row, col)
                     row, col, move.toRow, move.toCol, targetPiece.piece))
             end
             -- Skip this move
-        elseif not WouldMoveCauseCheck(row, col, move.toRow, move.toCol) then
+        elseif not WouldMoveCauseCheck(row, col, move.toRow, move.toCol, move) then
             -- Move is valid - doesn't leave king in check
             table.insert(validMoves, move)
         end
@@ -567,45 +728,15 @@ function WouldMoveCauseCheckPseudo(fromRow, fromCol, toRow, toCol)
     return wouldBeInCheck
 end
 
-function WouldMoveCauseCheck(fromRow, fromCol, toRow, toCol)
+function WouldMoveCauseCheck(fromRow, fromCol, toRow, toCol, moveData)
     local piece = GetPieceAt(fromRow, fromCol)
     if not piece then return true end  -- No piece to move, invalid
     
-    -- Save current board state
-    local capturedPiece = GetPieceAt(toRow, toCol)
-    local originalPiece = chessGame.board[fromRow][fromCol]
+    local undo = ApplyMove(fromRow, fromCol, toRow, toCol, moveData, true)
+    if not undo then return true end
     
-    -- Simulate the move
-    chessGame.board[toRow][toCol] = originalPiece
-    chessGame.board[fromRow][fromCol] = nil
-    
-    -- Update king position if moving the king
-    local originalKingPos = nil
-    if piece.piece == "king" then
-        if piece.isWhite then
-            originalKingPos = {row = chessGame.whiteKingPos.row, col = chessGame.whiteKingPos.col}
-            chessGame.whiteKingPos = {row = toRow, col = toCol}
-        else
-            originalKingPos = {row = chessGame.blackKingPos.row, col = chessGame.blackKingPos.col}
-            chessGame.blackKingPos = {row = toRow, col = toCol}
-        end
-    end
-    
-    -- Check if the king is in check after this move (legal attacks only)
     local wouldBeInCheck = IsInCheck(piece.isWhite, true)
-    
-    -- Restore board state
-    chessGame.board[fromRow][fromCol] = originalPiece
-    chessGame.board[toRow][toCol] = capturedPiece
-    
-    -- Restore king position
-    if piece.piece == "king" and originalKingPos then
-        if piece.isWhite then
-            chessGame.whiteKingPos = originalKingPos
-        else
-            chessGame.blackKingPos = originalKingPos
-        end
-    end
+    UndoMove(undo)
     
     return wouldBeInCheck
 end
@@ -656,8 +787,10 @@ function IsValidMove(fromRow, fromCol, toRow, toCol)
     for _, move in ipairs(validMoves) do
         if move.toRow == toRow and move.toCol == toCol then
             if Config.Debug then
-                print(string.format("[Chess] IsValidMove: ✓ Move (%d,%d)->(%d,%d) is valid", 
-                    fromRow, fromCol, toRow, toCol))
+                local moveType = move.castling and ("castling (" .. move.castling .. ")") or 
+                                (move.enPassant and "en passant" or "normal")
+                print(string.format("[Chess] IsValidMove: ✓ Move (%d,%d)->(%d,%d) is valid (%s)", 
+                    fromRow, fromCol, toRow, toCol, moveType))
             end
             return true, move
         end
@@ -672,13 +805,70 @@ function IsValidMove(fromRow, fromCol, toRow, toCol)
     return false
 end
 
--- Execute a move on the board
-function ExecuteMove(fromRow, fromCol, toRow, toCol, moveData)
+local function CopyCastlingRights()
+    return {
+        white = {
+            kingSide = chessGame.castlingRights.white.kingSide,
+            queenSide = chessGame.castlingRights.white.queenSide
+        },
+        black = {
+            kingSide = chessGame.castlingRights.black.kingSide,
+            queenSide = chessGame.castlingRights.black.queenSide
+        }
+    }
+end
+
+function ApplyMove(fromRow, fromCol, toRow, toCol, moveData, simulate)
     moveData = moveData or {}
     local piece = GetPieceAt(fromRow, fromCol)
-    if not piece then return false end
+    if not piece then return nil end
     
-    local capturedPiece = GetPieceAt(toRow, toCol)
+    local undo = {
+        fromRow = fromRow,
+        fromCol = fromCol,
+        toRow = toRow,
+        toCol = toCol,
+        capturedPiece = GetPieceAt(toRow, toCol),
+        enPassantCaptured = nil,
+        prevEnPassantTarget = chessGame.enPassantTarget,
+        prevCastlingRights = CopyCastlingRights(),
+        prevHalfmoveClock = chessGame.halfmoveClock,
+        prevFullmoveNumber = chessGame.fullmoveNumber,
+        prevLastMove = chessGame.lastMove,
+        prevWhiteKingPos = {row = chessGame.whiteKingPos.row, col = chessGame.whiteKingPos.col},
+        prevBlackKingPos = {row = chessGame.blackKingPos.row, col = chessGame.blackKingPos.col},
+        prevTurn = chessGame.currentTurn,
+        prevPieceType = piece.piece,
+        prevPieceHasMoved = piece.hasMoved,
+        rookUndo = nil,
+    }
+    
+    -- En passant capture
+    if moveData.enPassant then
+        local capturedRow = piece.isWhite and (toRow + 1) or (toRow - 1)
+        undo.enPassantCaptured = GetPieceAt(capturedRow, toCol)
+        chessGame.board[capturedRow][toCol] = nil
+    end
+    
+    -- Castling rook move
+    if moveData.castling then
+        local rookFromCol = moveData.castling == "kingSide" and 7 or 0
+        local rookToCol = moveData.castling == "kingSide" and 5 or 3
+        local rook = GetPieceAt(fromRow, rookFromCol)
+        if rook then
+            undo.rookUndo = {
+                rook = rook,
+                fromCol = rookFromCol,
+                toCol = rookToCol,
+                prevHasMoved = rook.hasMoved
+            }
+            chessGame.board[fromRow][rookFromCol] = nil
+            chessGame.board[fromRow][rookToCol] = rook
+            rook.hasMoved = true
+        end
+    end
+    
+    local wasPawnMove = piece.piece == "pawn"
     
     -- Move piece
     chessGame.board[toRow][toCol] = piece
@@ -694,16 +884,117 @@ function ExecuteMove(fromRow, fromCol, toRow, toCol, moveData)
         end
     end
     
-    -- Handle pawn promotion (set flag for table module to handle entity update)
-    if piece.piece == "pawn" and (toRow == 0 or toRow == 7) then
-        piece.needsPromotion = true
+    -- Handle promotion (for simulation)
+    if moveData.promotion then
+        piece.piece = moveData.promotion
+        piece.needsPromotion = nil
+    end
+    
+    -- Update en passant target
+    chessGame.enPassantTarget = nil
+    if piece.piece == "pawn" and math.abs(toRow - fromRow) == 2 then
+        chessGame.enPassantTarget = {row = (fromRow + toRow) / 2, col = fromCol}
+    end
+    
+    -- Update castling rights
+    if piece.piece == "king" then
+        chessGame.castlingRights[piece.isWhite and "white" or "black"].kingSide = false
+        chessGame.castlingRights[piece.isWhite and "white" or "black"].queenSide = false
+    elseif piece.piece == "rook" then
+        local homeRow = piece.isWhite and 7 or 0
+        if fromRow == homeRow then
+            if fromCol == 0 then
+                chessGame.castlingRights[piece.isWhite and "white" or "black"].queenSide = false
+            elseif fromCol == 7 then
+                chessGame.castlingRights[piece.isWhite and "white" or "black"].kingSide = false
+            end
+        end
+    end
+    if undo.capturedPiece and undo.capturedPiece.piece == "rook" then
+        local homeRow = undo.capturedPiece.isWhite and 7 or 0
+        if toRow == homeRow then
+            if toCol == 0 then
+                chessGame.castlingRights[undo.capturedPiece.isWhite and "white" or "black"].queenSide = false
+            elseif toCol == 7 then
+                chessGame.castlingRights[undo.capturedPiece.isWhite and "white" or "black"].kingSide = false
+            end
+        end
+    end
+    
+    -- Update halfmove clock
+    if wasPawnMove or undo.capturedPiece or undo.enPassantCaptured then
+        chessGame.halfmoveClock = 0
+    else
+        chessGame.halfmoveClock = chessGame.halfmoveClock + 1
+    end
+    
+    -- Update fullmove number
+    if chessGame.currentTurn == "black" then
+        chessGame.fullmoveNumber = chessGame.fullmoveNumber + 1
     end
     
     -- Update turn
     chessGame.currentTurn = chessGame.currentTurn == "white" and "black" or "white"
     
     -- Store last move
-    chessGame.lastMove = {fromRow = fromRow, fromCol = fromCol, toRow = toRow, toCol = toCol, piece = piece.piece, isWhite = piece.isWhite}
+    chessGame.lastMove = {fromRow = fromRow, fromCol = fromCol, toRow = toRow, toCol = toCol, piece = piece.piece, isWhite = piece.isWhite, moveData = moveData}
+    
+    return undo
+end
+
+function UndoMove(undo)
+    if not undo then return end
+    
+    local piece = GetPieceAt(undo.toRow, undo.toCol)
+    if piece then
+        piece.piece = undo.prevPieceType
+        piece.hasMoved = undo.prevPieceHasMoved
+    end
+    
+    chessGame.board[undo.fromRow][undo.fromCol] = piece
+    chessGame.board[undo.toRow][undo.toCol] = undo.capturedPiece
+    
+    if undo.enPassantCaptured then
+        local capturedRow = piece.isWhite and (undo.toRow + 1) or (undo.toRow - 1)
+        chessGame.board[capturedRow][undo.toCol] = undo.enPassantCaptured
+    end
+    
+    if undo.rookUndo then
+        chessGame.board[undo.fromRow][undo.rookUndo.toCol] = nil
+        chessGame.board[undo.fromRow][undo.rookUndo.fromCol] = undo.rookUndo.rook
+        undo.rookUndo.rook.hasMoved = undo.rookUndo.prevHasMoved
+    end
+    
+    chessGame.enPassantTarget = undo.prevEnPassantTarget
+    chessGame.castlingRights = undo.prevCastlingRights
+    chessGame.halfmoveClock = undo.prevHalfmoveClock
+    chessGame.fullmoveNumber = undo.prevFullmoveNumber
+    chessGame.lastMove = undo.prevLastMove
+    chessGame.whiteKingPos = undo.prevWhiteKingPos
+    chessGame.blackKingPos = undo.prevBlackKingPos
+    chessGame.currentTurn = undo.prevTurn
+end
+
+-- Execute a move on the board (real move)
+function ExecuteMove(fromRow, fromCol, toRow, toCol, moveData)
+    moveData = moveData or {}
+    local piece = GetPieceAt(fromRow, fromCol)
+    if not piece then return false end
+    
+    local undo = ApplyMove(fromRow, fromCol, toRow, toCol, moveData, false)
+    if not undo then return false end
+    
+    -- Handle pawn promotion (set flag for table module to handle entity update)
+    local pendingPromotion = false
+    if piece.piece == "pawn" and (toRow == 0 or toRow == 7) and not moveData.promotion then
+        piece.needsPromotion = true
+        chessGame.awaitingPromotion = true
+        pendingPromotion = true
+    end
+    
+    if not pendingPromotion then
+        UpdatePositionHistory()
+    end
     
     return true
 end
@@ -733,6 +1024,7 @@ function UpdateGameState()
     local inCheck = IsInCheck(currentPlayerIsWhite)
     local allMoves = GetAllValidMoves(currentPlayerIsWhite)
     local hasValidMoves = #allMoves > 0
+    local drawReason = nil
     
     if Config.Debug then
         local pieceCount = 0
@@ -750,17 +1042,78 @@ function UpdateGameState()
     if not hasValidMoves then
         if inCheck then
             chessGame.gameState = "checkmate"
+            chessGame.drawReason = nil
             if Config.Debug then print("[Chess] Game Over: Checkmate!") end
         else
             chessGame.gameState = "stalemate"
+            chessGame.drawReason = "stalemate"
             if Config.Debug then print("[Chess] Game Over: Stalemate!") end
         end
     elseif inCheck then
         chessGame.gameState = "check"
+        chessGame.drawReason = nil
         if Config.Debug then print("[Chess] King in check!") end
     else
         chessGame.gameState = "playing"
+        chessGame.drawReason = nil
     end
+    
+    if chessGame.gameState ~= "checkmate" then
+        if chessGame.halfmoveClock >= 100 then
+            drawReason = "50-move"
+        elseif IsThreefoldRepetition() then
+            drawReason = "threefold"
+        elseif IsInsufficientMaterial() then
+            drawReason = "insufficient"
+        end
+        if drawReason then
+            chessGame.gameState = "draw"
+            chessGame.drawReason = drawReason
+        end
+    end
+end
+
+function IsThreefoldRepetition()
+    local key = GetPositionKey()
+    return (chessGame.positionHistory[key] or 0) >= 3
+end
+
+function IsInsufficientMaterial()
+    local totalMinor = 0
+    local bishops = {}
+    for row = 0, 7 do
+        for col = 0, 7 do
+            local piece = GetPieceAt(row, col)
+            if piece then
+                if piece.piece == "pawn" or piece.piece == "rook" or piece.piece == "queen" then
+                    return false
+                end
+                if piece.piece == "bishop" or piece.piece == "knight" then
+                    totalMinor = totalMinor + 1
+                    if piece.piece == "bishop" then
+                        table.insert(bishops, (row + col) % 2)
+                    end
+                end
+            end
+        end
+    end
+    if totalMinor == 0 then
+        return true -- K vs K
+    end
+    if totalMinor == 1 then
+        return true -- K+N vs K or K+B vs K
+    end
+    if #bishops > 0 and totalMinor == #bishops then
+        -- Only bishops remain; draw if all bishops on same color
+        local color = bishops[1]
+        for i = 2, #bishops do
+            if bishops[i] ~= color then
+                return false
+            end
+        end
+        return true
+    end
+    return false
 end
 
 -- Get all valid moves for a color
@@ -772,7 +1125,14 @@ function GetAllValidMoves(isWhite)
             if piece and piece.isWhite == isWhite then
                 local moves = GetValidMoves(row, col)
                 for _, move in ipairs(moves) do
-                    table.insert(allMoves, {fromRow = row, fromCol = col, toRow = move.toRow, toCol = move.toCol})
+                    local moveData = {}
+                    for k, v in pairs(move) do
+                        moveData[k] = v
+                    end
+                    if piece.piece == "pawn" and (move.toRow == 0 or move.toRow == 7) then
+                        moveData.promotion = "queen"
+                    end
+                    table.insert(allMoves, {fromRow = row, fromCol = col, toRow = move.toRow, toCol = move.toCol, moveData = moveData})
                 end
             end
         end
@@ -824,25 +1184,13 @@ function Minimax(depth, isMaximizing, alpha, beta)
     
     if isMaximizing then
         local maxEval = -99999
-        for _, move in ipairs(allMoves) do
-            local piece = GetPieceAt(move.fromRow, move.fromCol)
-            local capturedPiece = GetPieceAt(move.toRow, move.toCol)
+        for i, move in ipairs(allMoves) do
+            -- Yield every 10 moves to prevent freezing (only in CPU thread)
+            if i % 10 == 0 then Wait(0) end
             
-            -- Simulate move
-            ExecuteMove(move.fromRow, move.fromCol, move.toRow, move.toCol)
+            local undo = ApplyMove(move.fromRow, move.fromCol, move.toRow, move.toCol, move.moveData, true)
             local eval = Minimax(depth - 1, false, alpha, beta)
-            
-            -- Undo move
-            chessGame.currentTurn = "white"
-            chessGame.board[move.fromRow][move.fromCol] = piece
-            chessGame.board[move.toRow][move.toCol] = capturedPiece
-            if piece.piece == "king" then
-                if piece.isWhite then
-                    chessGame.whiteKingPos = {row = move.fromRow, col = move.fromCol}
-                else
-                    chessGame.blackKingPos = {row = move.fromRow, col = move.fromCol}
-                end
-            end
+            UndoMove(undo)
             
             maxEval = math.max(maxEval, eval)
             alpha = math.max(alpha, eval)
@@ -851,25 +1199,13 @@ function Minimax(depth, isMaximizing, alpha, beta)
         return maxEval
     else
         local minEval = 99999
-        for _, move in ipairs(allMoves) do
-            local piece = GetPieceAt(move.fromRow, move.fromCol)
-            local capturedPiece = GetPieceAt(move.toRow, move.toCol)
+        for i, move in ipairs(allMoves) do
+            -- Yield every 10 moves to prevent freezing (only in CPU thread)
+            if i % 10 == 0 then Wait(0) end
             
-            -- Simulate move
-            ExecuteMove(move.fromRow, move.fromCol, move.toRow, move.toCol)
+            local undo = ApplyMove(move.fromRow, move.fromCol, move.toRow, move.toCol, move.moveData, true)
             local eval = Minimax(depth - 1, true, alpha, beta)
-            
-            -- Undo move
-            chessGame.currentTurn = "black"
-            chessGame.board[move.fromRow][move.fromCol] = piece
-            chessGame.board[move.toRow][move.toCol] = capturedPiece
-            if piece.piece == "king" then
-                if piece.isWhite then
-                    chessGame.whiteKingPos = {row = move.fromRow, col = move.fromCol}
-                else
-                    chessGame.blackKingPos = {row = move.fromRow, col = move.fromCol}
-                end
-            end
+            UndoMove(undo)
             
             minEval = math.min(minEval, eval)
             beta = math.min(beta, eval)
@@ -887,25 +1223,13 @@ function GetBestCPUMove(depth)
     local bestMove = nil
     local bestEval = 99999
     
-    for _, move in ipairs(allMoves) do
-        local piece = GetPieceAt(move.fromRow, move.fromCol)
-        local capturedPiece = GetPieceAt(move.toRow, move.toCol)
+    for i, move in ipairs(allMoves) do
+        -- Yield every 5 moves to prevent freezing (only in CPU thread)
+        if i % 5 == 0 then Wait(0) end
         
-        -- Simulate move
-        ExecuteMove(move.fromRow, move.fromCol, move.toRow, move.toCol)
+        local undo = ApplyMove(move.fromRow, move.fromCol, move.toRow, move.toCol, move.moveData, true)
         local eval = Minimax(depth - 1, true, -99999, 99999)
-        
-        -- Undo move
-        chessGame.currentTurn = "black"
-        chessGame.board[move.fromRow][move.fromCol] = piece
-        chessGame.board[move.toRow][move.toCol] = capturedPiece
-        if piece.piece == "king" then
-            if piece.isWhite then
-                chessGame.whiteKingPos = {row = move.fromRow, col = move.fromCol}
-            else
-                chessGame.blackKingPos = {row = move.fromRow, col = move.fromCol}
-            end
-        end
+        UndoMove(undo)
         
         if eval < bestEval then
             bestEval = eval
@@ -919,6 +1243,12 @@ end
 function GetCPUMove()
     if Config.Debug then print("[Chess] GetCPUMove: Starting CPU move calculation...") end
     
+    -- Check if CPU is in check - if so, we MUST get out of check
+    local cpuInCheck = IsInCheck(false, false) -- CPU is black (false)
+    if Config.Debug then
+        print(string.format("[Chess] GetCPUMove: CPU in check = %s", tostring(cpuInCheck)))
+    end
+    
     local difficulty = Config.Chess and Config.Chess.CPU_Difficulty or "medium"
     local depth = 1
     if difficulty == "easy" then depth = 1
@@ -926,9 +1256,68 @@ function GetCPUMove()
     elseif difficulty == "hard" then depth = 3
     end
     
-    local move = GetBestCPUMove(depth)
-    if not move then
-        move = GetRandomCPUMove()
+    local move = nil
+    if cpuInCheck then
+        -- When in check, prioritize moves that get out of check
+        -- Get all valid moves (these should already filter out moves that leave king in check)
+        local allMoves = GetAllValidMoves(false) -- CPU is black
+        if Config.Debug then
+            print(string.format("[Chess] GetCPUMove: CPU in check, found %d valid moves", #allMoves))
+        end
+        
+        if #allMoves == 0 then
+            if Config.Debug then print("[Chess] GetCPUMove: No valid moves found - checkmate!") end
+            return nil
+        end
+        
+        -- Filter to only moves that get out of check
+        local movesOutOfCheck = {}
+        for i, m in ipairs(allMoves) do
+            -- Yield every 20 moves to prevent freezing (only in CPU thread)
+            if i % 20 == 0 then Wait(0) end
+            
+            local undo = ApplyMove(m.fromRow, m.fromCol, m.toRow, m.toCol, m.moveData, true)
+            local stillInCheck = IsInCheckPseudo(false, true)
+            UndoMove(undo)
+            
+            if not stillInCheck then
+                table.insert(movesOutOfCheck, m)
+            end
+        end
+        
+        if Config.Debug then
+            print(string.format("[Chess] GetCPUMove: Found %d moves that get out of check", #movesOutOfCheck))
+        end
+        
+        if #movesOutOfCheck > 0 then
+            -- Use best move from moves that get out of check
+            local bestMove = nil
+            local bestEval = 99999
+            for i, m in ipairs(movesOutOfCheck) do
+                -- Yield every 5 moves to prevent freezing (only in CPU thread)
+                if i % 5 == 0 then Wait(0) end
+                
+                local undo = ApplyMove(m.fromRow, m.fromCol, m.toRow, m.toCol, m.moveData, true)
+                local eval = Minimax(depth - 1, true, -99999, 99999)
+                UndoMove(undo)
+                
+                if eval < bestEval then
+                    bestEval = eval
+                    bestMove = m
+                end
+            end
+            move = bestMove
+        else
+            -- No moves get out of check - checkmate
+            if Config.Debug then print("[Chess] GetCPUMove: No moves get out of check - checkmate!") end
+            return nil
+        end
+    else
+        -- Not in check, use normal move selection
+        move = GetBestCPUMove(depth)
+        if not move then
+            move = GetRandomCPUMove()
+        end
     end
     
     if move then
@@ -944,7 +1333,10 @@ function GetCPUMove()
             -- Try to get a different move
             local allMoves = GetAllValidMoves(false) -- CPU is black
             local validMoves = {}
-            for _, m in ipairs(allMoves) do
+            for i, m in ipairs(allMoves) do
+                -- Yield every 20 moves to prevent freezing (only in CPU thread)
+                if i % 20 == 0 then Wait(0) end
+                
                 local target = GetPieceAt(m.toRow, m.toCol)
                 if not target or target.isWhite ~= false then -- Only moves to empty squares or opponent pieces
                     table.insert(validMoves, m)
@@ -962,14 +1354,7 @@ function GetCPUMove()
             end
         end
         
-        local moveData = {}
-        local validMoves = GetValidMoves(move.fromRow, move.fromCol)
-        for _, vm in ipairs(validMoves) do
-            if vm.toRow == move.toRow and vm.toCol == move.toCol then
-                moveData = vm
-                break
-            end
-        end
+        local moveData = move.moveData or {}
         
         if Config.Debug then
             print(string.format("[Chess] GetCPUMove: CPU chose move from (%d,%d) to (%d,%d)", 
