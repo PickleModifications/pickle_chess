@@ -1,6 +1,9 @@
 INT_ENTITIES = {}
 CURRENT_ENTITY = nil
 CURRENT_INTERACTION = nil
+-- Frames to ignore pick-up after dropping (stops spam-click from re-grabbing immediately)
+local PICKUP_COOLDOWN_FRAMES = 8
+local PickupCooldown = 0
 local InteractiveEntityTypes = {}
 
 -- Board drag: piece stays at this height (in meters relative to interaction coords) while dragging
@@ -56,6 +59,17 @@ function SelectedInteractiveEntityThread(entity, data)
     end
 end
 
+function SelectCheckInteractiveEntity(entity, data)
+    local currentEntity = INT_ENTITIES[entity]
+    if not currentEntity then return end
+    local entType = InteractiveEntityTypes[currentEntity.type]
+    if not entType then return end
+    if entType.selectCheck then
+        return entType.selectCheck(entity, data)
+    end
+    return true
+end
+
 function UnselectedInteractiveEntity(entity, data)
     local currentEntity = INT_ENTITIES[entity]
     if not currentEntity then return end
@@ -108,11 +122,12 @@ end
 function CreateInteractiveEntity(entType, coords, heading, params)
     -- local entity = CreateEntity(entType, coords, heading, data)
     -- INT_ENTITIES[entity] = data
-    if not InteractiveEntityTypes[entType] then return print("ERROR: No interactive entity type found for: ", entType) end
+    if not InteractiveEntityTypes[entType] then return end
     local entityData = {
         type = entType,
         zOffset = 0.01,
         display = params.display,
+        selectionCheck = params.selectionCheck,
     }
     local entity = nil
     local newData = {}
@@ -148,6 +163,7 @@ function StartInteraction(coords, heading)
         rightVector = rightVector,
         upVector = upVector,
     }
+    PickupCooldown = 0
     -- Send controls to NUI
     SendNUIMessage({
         type = "updateControls",
@@ -187,7 +203,6 @@ function StartInteraction(coords, heading)
                     needsMove = true
                 end
                 if needsMove then
-                    print(newX, newY)
                     SetCursorLocation(newX, newY)
                 end
             end
@@ -222,41 +237,20 @@ function StartInteraction(coords, heading)
                 })
             end
             if not CURRENT_ENTITY then
+                if PickupCooldown > 0 then
+                    PickupCooldown = PickupCooldown - 1
+                end
                 local hit, dragCoords, entityHit = GetCursorRaycast(camCoords, camRotation)
                 -- DrawMarker(1, dragCoords.x, dragCoords.y, dragCoords.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 255, 0, 0, 255, false, false, 2)
-                if IsDisabledControlJustPressed(0, 24)  then
+                if PickupCooldown == 0 and IsDisabledControlJustPressed(0, 24)  then
                     if hit and DoesEntityExist(entityHit) and INT_ENTITIES[entityHit] then
-                        -- Prevent interaction during CPU turn
-                        if chessGame and chessGame.isCPUTurn then
-                            -- Don't allow interaction during CPU turn
-                            if Config.Debug then print("[Chess] Interaction blocked: CPU turn") end
-                        -- Prevent interaction with opponent pieces (user is white, can only move white pieces)
-                        elseif chessGame and chessGame.currentTurn == "white" then
-                            local isWhite = GetChessPieceFromEntity(entityHit)
-                            if isWhite == true then
-                                -- User's turn and user's piece - allow interaction
-                                if not INT_ENTITIES[entityHit].disableInteraction then
-                                    CURRENT_ENTITY = entityHit
-                                    pitch = GetEntityRotation(CURRENT_ENTITY).x
-                                    -- Store fixed drag height so piece doesn't bob while dragging
-                                    INT_ENTITIES[entityHit].dragZ = GetEntityCoords(entityHit).z
-                                end
-                                InteractiveEntityClicked(entityHit)
-                            else
-                                -- Trying to interact with opponent's (black) piece - block it
-                                if Config.Debug then print("[Chess] Interaction blocked: Cannot move opponent's pieces") end
-                                -- Show notification to user
-                                if ShowNotification then
-                                    ShowNotification("You cannot move your opponent's pieces!")
-                                end
-                            end
-                        else
-                            -- Not user's turn (black's turn) - don't allow any interaction
-                            if Config.Debug then print("[Chess] Interaction blocked: Not your turn") end
-                            -- Show notification to user
-                            if ShowNotification then
-                                ShowNotification("Wait for your turn!")
-                            end
+                        local entData = INT_ENTITIES[entityHit]
+                        if SelectCheckInteractiveEntity(entityHit, {}) and not entData.disableInteraction then
+                            CURRENT_ENTITY = entityHit
+                            pitch = GetEntityRotation(CURRENT_ENTITY).x
+                            INT_ENTITIES[entityHit].dragZ = GetEntityCoords(entityHit).z
+                            FreezeEntityPosition(entityHit, false)
+                            InteractiveEntityClicked(entityHit)
                         end
                     end
                 end
@@ -303,7 +297,9 @@ function StartInteraction(coords, heading)
                         if not IsDisabledControlPressed(0, 24) then
                             currentEntity.zOffset = dragZ - coords.z
                             UnselectedInteractiveEntity(CURRENT_ENTITY)
+                            FreezeEntityPosition(CURRENT_ENTITY, true)
                             CURRENT_ENTITY = nil
+                            PickupCooldown = PICKUP_COOLDOWN_FRAMES
                         end
                     end
                 end

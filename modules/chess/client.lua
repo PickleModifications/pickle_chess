@@ -55,7 +55,6 @@ end
 -- Sync board state with actual piece positions
 function SyncBoardWithPieces(ignoreEntity)
     if not tableEntity or not tableEntity.whitePieces or not tableEntity.blackPieces then 
-        if Config.Debug then print("[Chess] SyncBoardWithPieces: tableEntity or pieces arrays missing!") end
         return 
     end
     
@@ -121,9 +120,6 @@ function SyncBoardWithPieces(ignoreEntity)
                     end
                 end
                 blackCount = blackCount + 1
-                if Config.Debug and (piece == "bishop" or piece == "pawn") then
-                    print(string.format("[Chess] SyncBoardWithPieces: Black %s synced to (%d,%d)", piece, actualRow, actualCol))
-                end
             else
                 -- Fallback: use expected position
                 chessGame.board[expectedRow][expectedCol] = {
@@ -140,15 +136,9 @@ function SyncBoardWithPieces(ignoreEntity)
                     end
                 end
                 blackCount = blackCount + 1
-                if Config.Debug and (piece == "bishop" or piece == "pawn") then
-                    print(string.format("[Chess] SyncBoardWithPieces: Black %s synced to fallback (%d,%d)", piece, expectedRow, expectedCol))
-                end
             end
         end
         ::continue_black::
-    end
-    if Config.Debug then
-        print(string.format("[Chess] SyncBoardWithPieces: Synced %d black pieces", blackCount))
     end
     
     -- Sync white pieces
@@ -210,10 +200,6 @@ function SyncBoardWithPieces(ignoreEntity)
             end
         end
         ::continue_white::
-    end
-    if Config.Debug then
-        print(string.format("[Chess] SyncBoardWithPieces: Synced %d white pieces, %d black pieces (total: %d)", 
-            whiteCount, blackCount, whiteCount + blackCount))
     end
 end
 
@@ -294,10 +280,6 @@ function IsSquareAttackedPseudo(row, col, byWhite, skipSync)
                 local moves = GenerateMovesForPiece(r, c, piece.piece, piece.isWhite, true)
                 for _, move in ipairs(moves) do
                     if move.toRow == row and move.toCol == col then
-                        if Config.Debug then
-                            print(string.format("[Chess] Square (%d,%d) is attacked by %s %s at (%d,%d)", 
-                                row, col, piece.isWhite and "white" or "black", piece.piece, r, c))
-                        end
                         return true
                     end
                 end
@@ -324,10 +306,6 @@ function IsSquareAttacked(row, col, byWhite, skipSync, legalOnly)
                 for _, move in ipairs(moves) do
                     if move.toRow == row and move.toCol == col then
                         if not WouldMoveCauseCheckPseudo(r, c, move.toRow, move.toCol) then
-                            if Config.Debug then
-                                print(string.format("[Chess] Square (%d,%d) is attacked by legal %s %s at (%d,%d)", 
-                                    row, col, piece.isWhite and "white" or "black", piece.piece, r, c))
-                            end
                             return true
                         end
                     end
@@ -404,10 +382,6 @@ function GenerateMovesForPiece(row, col, piece, isWhite, attackOnly)
                     -- Can capture opponent piece
                     if target and target.isWhite ~= isWhite then
                         table.insert(moves, {toRow = captureRow, toCol = captureCol})
-                        if Config.Debug then
-                            print(string.format("[Chess] Pawn at (%d,%d) can capture %s at (%d,%d)", 
-                                row, col, target.piece, captureRow, captureCol))
-                        end
                     end
                     
                     -- En passant capture
@@ -488,16 +462,8 @@ function GenerateMovesForPiece(row, col, piece, isWhite, attackOnly)
                     if target.isWhite ~= isWhite then
                         -- Valid capture move
                         table.insert(moves, {toRow = newRow, toCol = newCol})
-                        if Config.Debug then
-                            print(string.format("[Chess] Bishop at (%d,%d) can capture %s at (%d,%d)", 
-                                row, col, target.piece, newRow, newCol))
-                        end
                     else
                         -- Friendly piece blocks this direction
-                        if Config.Debug then
-                            print(string.format("[Chess] Bishop at (%d,%d) blocked by friendly %s at (%d,%d)", 
-                                row, col, target.piece, newRow, newCol))
-                        end
                     end
                     break  -- Stop in this direction (blocked by piece)
                 else
@@ -562,12 +528,6 @@ function GenerateMovesForPiece(row, col, piece, isWhite, attackOnly)
             local castling = chessGame.castlingRights[isWhite and "white" or "black"]
             local kingPiece = GetPieceAt(row, col)
             
-            if Config.Debug and piece == "king" then
-                print(string.format("[Chess] GenerateMovesForPiece: King at (%d,%d), hasMoved=%s, castlingRights=%s", 
-                    row, col, tostring(kingPiece and kingPiece.hasMoved), 
-                    castling and (tostring(castling.kingSide) .. "/" .. tostring(castling.queenSide)) or "nil"))
-            end
-            
             if kingPiece and not kingPiece.hasMoved and castling then
                 -- King side castling (O-O)
                 if castling.kingSide then
@@ -578,24 +538,7 @@ function GenerateMovesForPiece(row, col, piece, isWhite, attackOnly)
                                not IsSquareAttacked(row, 5, not isWhite, true, true) and
                                not IsSquareAttacked(row, 6, not isWhite, true, true) then
                                 table.insert(moves, {toRow = row, toCol = 6, castling = "kingSide"})
-                                if Config.Debug then
-                                    print(string.format("[Chess] GenerateMovesForPiece: Added king-side castling move for %s king at (%d,%d)", 
-                                        isWhite and "white" or "black", row, col))
-                                end
-                            else
-                                if Config.Debug then
-                                    print(string.format("[Chess] GenerateMovesForPiece: King-side castling blocked - squares attacked"))
-                                end
                             end
-                        else
-                            if Config.Debug then
-                                print(string.format("[Chess] GenerateMovesForPiece: King-side castling blocked - squares occupied"))
-                            end
-                        end
-                    else
-                        if Config.Debug then
-                            print(string.format("[Chess] GenerateMovesForPiece: King-side castling blocked - rook check failed (rook=%s, hasMoved=%s)", 
-                                rook and rook.piece or "nil", rook and tostring(rook.hasMoved) or "nil"))
                         end
                     end
                 end
@@ -609,24 +552,7 @@ function GenerateMovesForPiece(row, col, piece, isWhite, attackOnly)
                                not IsSquareAttacked(row, 3, not isWhite, true, true) and
                                not IsSquareAttacked(row, 2, not isWhite, true, true) then
                                 table.insert(moves, {toRow = row, toCol = 2, castling = "queenSide"})
-                                if Config.Debug then
-                                    print(string.format("[Chess] GenerateMovesForPiece: Added queen-side castling move for %s king at (%d,%d)", 
-                                        isWhite and "white" or "black", row, col))
-                                end
-                            else
-                                if Config.Debug then
-                                    print(string.format("[Chess] GenerateMovesForPiece: Queen-side castling blocked - squares attacked"))
-                                end
                             end
-                        else
-                            if Config.Debug then
-                                print(string.format("[Chess] GenerateMovesForPiece: Queen-side castling blocked - squares occupied"))
-                            end
-                        end
-                    else
-                        if Config.Debug then
-                            print(string.format("[Chess] GenerateMovesForPiece: Queen-side castling blocked - rook check failed (rook=%s, hasMoved=%s)", 
-                                rook and rook.piece or "nil", rook and tostring(rook.hasMoved) or "nil"))
                         end
                     end
                 end
@@ -642,9 +568,6 @@ end
 function GetValidMoves(row, col)
     local piece = GetPieceAt(row, col)
     if not piece then 
-        if Config.Debug then 
-            print(string.format("[Chess] GetValidMoves: No piece at (%d,%d)", row, col)) 
-        end
         return {} 
     end
     
@@ -657,27 +580,11 @@ function GetValidMoves(row, col)
         -- Double-check: ensure we're not moving to a friendly piece (shouldn't happen, but safety check)
         local targetPiece = GetPieceAt(move.toRow, move.toCol)
         if targetPiece and targetPiece.isWhite == piece.isWhite then
-            if Config.Debug then
-                print(string.format("[Chess] GetValidMoves: WARNING - Move (%d,%d)->(%d,%d) would capture friendly piece %s! This should not happen.", 
-                    row, col, move.toRow, move.toCol, targetPiece.piece))
-            end
             -- Skip this move
         elseif not WouldMoveCauseCheck(row, col, move.toRow, move.toCol, move) then
             -- Move is valid - doesn't leave king in check
             table.insert(validMoves, move)
         end
-    end
-    
-    if Config.Debug and #allMoves > 0 then
-        local captureCount = 0
-        for _, mv in ipairs(validMoves) do
-            local target = GetPieceAt(mv.toRow, mv.toCol)
-            if target and target.isWhite ~= piece.isWhite then
-                captureCount = captureCount + 1
-            end
-        end
-        print(string.format("[Chess] GetValidMoves: %s at (%d,%d) - Generated: %d, Valid: %d, Captures: %d", 
-            piece.piece, row, col, #allMoves, #validMoves, captureCount))
     end
     
     return validMoves
@@ -747,36 +654,22 @@ function IsValidMove(fromRow, fromCol, toRow, toCol)
     -- Check if source square has a piece
     local piece = GetPieceAt(fromRow, fromCol)
     if not piece then 
-        if Config.Debug then 
-            print(string.format("[Chess] IsValidMove: No piece at (%d,%d)", fromRow, fromCol)) 
-        end
         return false 
     end
     
     -- Check if it's the correct turn
     if (piece.isWhite and chessGame.currentTurn ~= "white") or (not piece.isWhite and chessGame.currentTurn ~= "black") then
-        if Config.Debug then 
-            print(string.format("[Chess] IsValidMove: Wrong turn - piece isWhite=%s, currentTurn=%s", 
-                tostring(piece.isWhite), chessGame.currentTurn or "nil")) 
-        end
         return false
     end
     
     -- Check if destination square is valid
     if not IsValidSquare(toRow, toCol) then
-        if Config.Debug then
-            print(string.format("[Chess] IsValidMove: Invalid destination square (%d,%d)", toRow, toCol))
-        end
         return false
     end
     
     -- Check if moving to a friendly piece (not allowed)
     local targetPiece = GetPieceAt(toRow, toCol)
     if targetPiece and targetPiece.isWhite == piece.isWhite then
-        if Config.Debug then
-            print(string.format("[Chess] IsValidMove: Cannot move to square with friendly piece (%d,%d)->(%d,%d)", 
-                fromRow, fromCol, toRow, toCol))
-        end
         return false
     end
     
@@ -786,22 +679,11 @@ function IsValidMove(fromRow, fromCol, toRow, toCol)
     -- Check if the requested move is in the valid moves list
     for _, move in ipairs(validMoves) do
         if move.toRow == toRow and move.toCol == toCol then
-            if Config.Debug then
-                local moveType = move.castling and ("castling (" .. move.castling .. ")") or 
-                                (move.enPassant and "en passant" or "normal")
-                print(string.format("[Chess] IsValidMove: ✓ Move (%d,%d)->(%d,%d) is valid (%s)", 
-                    fromRow, fromCol, toRow, toCol, moveType))
-            end
             return true, move
         end
     end
     
     -- Move not found in valid moves
-    if Config.Debug then
-        print(string.format("[Chess] IsValidMove: ✗ Move (%d,%d)->(%d,%d) is not valid (not in valid moves list, %d valid moves available)", 
-            fromRow, fromCol, toRow, toCol, #validMoves))
-    end
-    
     return false
 end
 
@@ -1002,7 +884,6 @@ end
 -- Update game state (check, checkmate, stalemate)
 function UpdateGameState()
     if not tableEntity or not tableEntity.whitePieces or not tableEntity.blackPieces then 
-        if Config.Debug then print("[Chess] UpdateGameState: tableEntity not ready, skipping...") end
         return 
     end
     
@@ -1016,7 +897,6 @@ function UpdateGameState()
         end
     end
     if pieceCount < 10 then
-        if Config.Debug then print(string.format("[Chess] UpdateGameState: Board seems out of sync (%d pieces), syncing...", pieceCount)) end
         SyncBoardWithPieces()
     end
     
@@ -1026,33 +906,17 @@ function UpdateGameState()
     local hasValidMoves = #allMoves > 0
     local drawReason = nil
     
-    if Config.Debug then
-        local pieceCount = 0
-        for row = 0, 7 do
-            for col = 0, 7 do
-                if chessGame.board[row] and chessGame.board[row][col] then
-                    pieceCount = pieceCount + 1
-                end
-            end
-        end
-        print(string.format("[Chess] UpdateGameState: Turn=%s, Pieces=%d, HasMoves=%s, InCheck=%s", 
-            chessGame.currentTurn, pieceCount, tostring(hasValidMoves), tostring(inCheck)))
-    end
-    
     if not hasValidMoves then
         if inCheck then
             chessGame.gameState = "checkmate"
             chessGame.drawReason = nil
-            if Config.Debug then print("[Chess] Game Over: Checkmate!") end
         else
             chessGame.gameState = "stalemate"
             chessGame.drawReason = "stalemate"
-            if Config.Debug then print("[Chess] Game Over: Stalemate!") end
         end
     elseif inCheck then
         chessGame.gameState = "check"
         chessGame.drawReason = nil
-        if Config.Debug then print("[Chess] King in check!") end
     else
         chessGame.gameState = "playing"
         chessGame.drawReason = nil
@@ -1241,13 +1105,8 @@ function GetBestCPUMove(depth)
 end
 
 function GetCPUMove()
-    if Config.Debug then print("[Chess] GetCPUMove: Starting CPU move calculation...") end
-    
     -- Check if CPU is in check - if so, we MUST get out of check
     local cpuInCheck = IsInCheck(false, false) -- CPU is black (false)
-    if Config.Debug then
-        print(string.format("[Chess] GetCPUMove: CPU in check = %s", tostring(cpuInCheck)))
-    end
     
     local difficulty = Config.Chess and Config.Chess.CPU_Difficulty or "medium"
     local depth = 1
@@ -1261,12 +1120,8 @@ function GetCPUMove()
         -- When in check, prioritize moves that get out of check
         -- Get all valid moves (these should already filter out moves that leave king in check)
         local allMoves = GetAllValidMoves(false) -- CPU is black
-        if Config.Debug then
-            print(string.format("[Chess] GetCPUMove: CPU in check, found %d valid moves", #allMoves))
-        end
         
         if #allMoves == 0 then
-            if Config.Debug then print("[Chess] GetCPUMove: No valid moves found - checkmate!") end
             return nil
         end
         
@@ -1283,10 +1138,6 @@ function GetCPUMove()
             if not stillInCheck then
                 table.insert(movesOutOfCheck, m)
             end
-        end
-        
-        if Config.Debug then
-            print(string.format("[Chess] GetCPUMove: Found %d moves that get out of check", #movesOutOfCheck))
         end
         
         if #movesOutOfCheck > 0 then
@@ -1309,7 +1160,6 @@ function GetCPUMove()
             move = bestMove
         else
             -- No moves get out of check - checkmate
-            if Config.Debug then print("[Chess] GetCPUMove: No moves get out of check - checkmate!") end
             return nil
         end
     else
@@ -1326,10 +1176,6 @@ function GetCPUMove()
         local targetPiece = GetPieceAt(move.toRow, move.toCol)
         
         if piece and targetPiece and targetPiece.isWhite == piece.isWhite then
-            if Config.Debug then
-                print(string.format("[Chess] GetCPUMove: ERROR - Move would place piece on friendly piece! (%d,%d)->(%d,%d), target=%s", 
-                    move.fromRow, move.fromCol, move.toRow, move.toCol, targetPiece.piece))
-            end
             -- Try to get a different move
             local allMoves = GetAllValidMoves(false) -- CPU is black
             local validMoves = {}
@@ -1344,22 +1190,12 @@ function GetCPUMove()
             end
             if #validMoves > 0 then
                 move = validMoves[math.random(#validMoves)]
-                if Config.Debug then
-                    print(string.format("[Chess] GetCPUMove: Using alternative move (%d,%d)->(%d,%d)", 
-                        move.fromRow, move.fromCol, move.toRow, move.toCol))
-                end
             else
-                if Config.Debug then print("[Chess] GetCPUMove: No alternative moves available!") end
                 return nil
             end
         end
         
         local moveData = move.moveData or {}
-        
-        if Config.Debug then
-            print(string.format("[Chess] GetCPUMove: CPU chose move from (%d,%d) to (%d,%d)", 
-                move.fromRow, move.fromCol, move.toRow, move.toCol))
-        end
         
         return {
             fromRow = move.fromRow,
@@ -1370,6 +1206,5 @@ function GetCPUMove()
         }
     end
     
-    if Config.Debug then print("[Chess] GetCPUMove: No valid CPU move found!") end
     return nil
 end

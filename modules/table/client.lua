@@ -2,6 +2,7 @@ tableEntity = {} -- Global so chess module can access it
 local pieceOriginalPositions = {} -- Store original positions for move validation
 local validMovesDisplay = {} -- Store valid moves to display
 local isAnimating = false
+local animatingEntities = {} -- Track which entities are currently animating
 local pendingPromotion = nil
 
 function GetBoardSquareCoords(row, col)
@@ -306,8 +307,17 @@ function AnimatePieceMove(entity, fromCoords, toCoords, offset, duration, callba
     local startCoords = vector3(fromCoords.x, fromCoords.y, toCoords.z + offset.coords.z)
     local endCoords = vector3(toCoords.x + offset.coords.x, toCoords.y + offset.coords.y, toCoords.z + offset.coords.z)
     
+    -- Mark entity as animating
+    animatingEntities[entity] = true
+    isAnimating = true
+    
     CreateThread(function()
         while GetGameTimer() - startTime < duration do
+            -- Check if entity was grabbed (no longer animating)
+            if not animatingEntities[entity] then
+                break
+            end
+            
             local progress = (GetGameTimer() - startTime) / duration
             progress = math.min(1.0, progress)
             -- Ease in-out
@@ -322,35 +332,39 @@ function AnimatePieceMove(entity, fromCoords, toCoords, offset, duration, callba
             SetEntityCoords(entity, currentCoords.x, currentCoords.y, currentCoords.z, false, false, false, false)
             Wait(0)
         end
-        -- Ensure final position
-        SetEntityCoords(entity, endCoords.x, endCoords.y, endCoords.z, false, false, false, false)
+        -- Ensure final position only if still animating
+        if animatingEntities[entity] then
+            SetEntityCoords(entity, endCoords.x, endCoords.y, endCoords.z, false, false, false, false)
+        end
+        
+        -- Clear animation flag
+        animatingEntities[entity] = nil
+        -- Update global flag if no entities are animating
+        local anyAnimating = false
+        for _ in pairs(animatingEntities) do
+            anyAnimating = true
+            break
+        end
+        isAnimating = anyAnimating
+        
         if callback then callback() end
     end)
 end
 
 -- Execute CPU move
 function ExecuteCPUMove()
-    if Config.Debug then
-        print(string.format("[Chess] ExecuteCPUMove called - isCPUTurn=%s, currentTurn=%s, gameState=%s", 
-            tostring(chessGame.isCPUTurn), chessGame.currentTurn or "nil", chessGame.gameState or "nil"))
-    end
-    
     if chessGame.awaitingPromotion then
-        if Config.Debug then print("[Chess] ExecuteCPUMove: Waiting for promotion choice, returning") end
         return
     end
     
     if chessGame.isCPUTurn then 
-        if Config.Debug then print("[Chess] ExecuteCPUMove: Already CPU turn, returning") end
         return 
     end
     if chessGame.currentTurn ~= "black" then 
-        if Config.Debug then print(string.format("[Chess] ExecuteCPUMove: Not black's turn (currentTurn=%s), returning", chessGame.currentTurn or "nil")) end
         return 
     end
     -- Allow CPU to move when gameState is "playing" or "check" (CPU must respond to check)
     if chessGame.gameState ~= "playing" and chessGame.gameState ~= "check" then 
-        if Config.Debug then print(string.format("[Chess] ExecuteCPUMove: Game not in playable state (gameState=%s), returning", chessGame.gameState or "nil")) end
         return 
     end
     
@@ -362,14 +376,11 @@ function ExecuteCPUMove()
         -- Sync board before getting CPU move (only if tableEntity exists)
         if tableEntity and tableEntity.whitePieces and tableEntity.blackPieces then
             SyncBoardWithPieces()
-        else
-            if Config.Debug then print("[Chess] ExecuteCPUMove: tableEntity not ready, cannot sync board") end
         end
         
         local cpuMove = GetCPUMove()
         
         if not cpuMove then
-            if Config.Debug then print("[Chess] ExecuteCPUMove: No valid CPU move found") end
             chessGame.isCPUTurn = false
             return
         end
@@ -378,10 +389,6 @@ function ExecuteCPUMove()
         local targetPiece = GetPieceAt(cpuMove.toRow, cpuMove.toCol)
         local movingPiece = GetPieceAt(cpuMove.fromRow, cpuMove.fromCol)
         if targetPiece and targetPiece.isWhite == movingPiece.isWhite then
-            if Config.Debug then
-                print(string.format("[Chess] ExecuteCPUMove: ERROR - CPU trying to move to square with friendly piece! (%d,%d)->(%d,%d), target=%s", 
-                    cpuMove.fromRow, cpuMove.fromCol, cpuMove.toRow, cpuMove.toCol, targetPiece.piece))
-            end
             -- Try to get a different move
             local allMoves = GetAllValidMoves(false) -- CPU is black
             local validMoves = {}
@@ -393,20 +400,10 @@ function ExecuteCPUMove()
             end
             if #validMoves > 0 then
                 cpuMove = validMoves[math.random(#validMoves)]
-                if Config.Debug then
-                    print(string.format("[Chess] ExecuteCPUMove: Using alternative move (%d,%d)->(%d,%d)", 
-                        cpuMove.fromRow, cpuMove.fromCol, cpuMove.toRow, cpuMove.toCol))
-                end
             else
-                if Config.Debug then print("[Chess] ExecuteCPUMove: No alternative moves available, aborting") end
                 chessGame.isCPUTurn = false
                 return
             end
-        end
-        
-        if Config.Debug then
-            print(string.format("[Chess] ExecuteCPUMove: CPU moving from (%d,%d) to (%d,%d)", 
-                cpuMove.fromRow, cpuMove.fromCol, cpuMove.toRow, cpuMove.toCol))
         end
         
         local fromCoords = GetBoardSquareCoords(cpuMove.fromRow, cpuMove.fromCol)
@@ -595,6 +592,29 @@ CreateThread(function()
         end,
         entityThread = function(entity, data)
         end,
+        selectCheck = function(entity, data)
+            if not chessGame then return false end
+            -- Prevent grabbing pieces that are currently animating
+            if animatingEntities[entity] then
+                return false
+            end
+            if chessGame.isCPUTurn then
+                if Config.Debug then print("[Chess] Interaction blocked: CPU turn") end
+                return false
+            end
+            if chessGame.currentTurn ~= "white" then
+                if Config.Debug then print("[Chess] Interaction blocked: Not your turn") end
+                if ShowNotification then ShowNotification("Wait for your turn!") end
+                return false
+            end
+            local isWhite = GetChessPieceFromEntity(entity)
+            if isWhite ~= true then
+                if Config.Debug then print("[Chess] Interaction blocked: Cannot move opponent's pieces") end
+                if ShowNotification then ShowNotification("You cannot move your opponent's pieces!") end
+                return false
+            end
+            return true
+        end,
         selectedThread = function(entity, data)
             -- Check if it's player's turn and piece belongs to player
             if chessGame.awaitingPromotion or chessGame.isCPUTurn or chessGame.currentTurn ~= "white" then return end
@@ -602,7 +622,6 @@ CreateThread(function()
             local isWhite, index, model, piece, offset = GetChessPieceFromEntity(entity)
             -- Prevent interaction with opponent pieces (user is white, can only move white pieces)
             if not isWhite then 
-                if Config.Debug then print("[Chess] selectedThread: Blocked - Cannot select opponent's (black) pieces") end
                 return 
             end
             
@@ -665,7 +684,6 @@ CreateThread(function()
                             end
                         end
                     end
-                    print(string.format("[Chess] After SyncBoardWithPieces: %d opponent pieces, %d friendly pieces on board", opponentCount, friendlyCount))
                     
                     -- Check diagonal squares specifically for pawns
                     if piece == "pawn" then
@@ -696,13 +714,6 @@ CreateThread(function()
                                             end
                                         end
                                     end
-                                    print(string.format("[Chess] Diagonal (%d,%d) after sync: %s (entity in %s, board says isWhite=%s)", 
-                                        checkRow, checkCol, 
-                                        diagonalPiece.isWhite and "white " .. diagonalPiece.piece or "black " .. diagonalPiece.piece,
-                                        foundInArray,
-                                        tostring(diagonalPiece.isWhite)))
-                                else
-                                    print(string.format("[Chess] Diagonal (%d,%d) after sync: empty", checkRow, checkCol))
                                 end
                             end
                         end
@@ -719,16 +730,6 @@ CreateThread(function()
                 
                 -- Get valid moves - piece is now guaranteed to be at (row, col) and board is synced
                 validMovesDisplay[entity] = GetValidMoves(row, col)
-                
-                -- Debug output
-                if Config.Debug then
-                    local verifyPiece = GetPieceAt(row, col)
-                    if verifyPiece then
-                        print(string.format("[Chess] Piece %s at (%d,%d) - Found %d valid moves", pieceData.piece, row, col, #validMovesDisplay[entity]))
-                    else
-                        print(string.format("[Chess] ERROR: Piece %s not found at (%d,%d) after placement!", pieceData.piece, row, col))
-                    end
-                end
             end
             
             local orig = pieceOriginalPositions[entity]
@@ -1064,7 +1065,6 @@ CreateThread(function()
                     end
                 else
                     -- If tableEntity not ready, just trigger CPU move anyway
-                    if Config.Debug then print("[Chess] tableEntity not ready after move, but triggering CPU move anyway") end
                     ExecuteCPUMove()
                 end
             end)

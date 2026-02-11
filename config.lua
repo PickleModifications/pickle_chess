@@ -28,7 +28,6 @@ Config.FrameworkSettings = {
         if type(item) == "table" and item.metadata then return item.metadata end
         if type(data) == "table" and data.info then return data.info end
         if type(item) == "table" and item.info then return item.info end
-        print("ERROR: METADATA IS WRONGLY CONFIGURED, CHECK CONFIG.LUA:^0", item, data)
     end
 }
 
