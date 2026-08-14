@@ -2,7 +2,7 @@ fx_version "cerulean"
 game "gta5"
 author "Pickle Mods"
 description "The best chess resource for FiveM."
-version "v1.0.0"
+version "v1.0.1"
 data_file 'DLC_ITYP_REQUEST' 'prop_chess_w.ytyp'
 
 
